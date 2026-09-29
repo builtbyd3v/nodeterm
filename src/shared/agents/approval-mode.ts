@@ -94,6 +94,9 @@ interface ApprovalDialect {
   /** What this CLI actually does when `manual` turns out to be inexpressible, for the UI note.
    *  Lives beside the table so the sentence cannot drift from it. */
   manualGapNote?: string
+  /** argv for a table value. Default `[flag, value]`. Only for a CLI whose modes are DIFFERENT
+   *  flags rather than values of one (cursor: `--mode plan` but a bare `--force`). */
+  spell?: (value: string) => string[]
 }
 
 const GEMINI_MODES: Partial<Record<AgentPermissionMode, string>> = {
@@ -145,6 +148,33 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // `plan` and `acceptEdits` are absent ON PURPOSE — see modeSupported.
 }
 
+const CURSOR_MODES: Partial<Record<AgentPermissionMode, string>> = {
+  plan: 'plan',
+  bypassPermissions: 'force'
+  // MEASURED on cursor-agent 2026.09.28-64d2043: the flags reach the session from BEFORE the `agent`
+  // subcommand (see AGENT_CONFIG.cursor), and the effect is real, not just a footer label. With
+  // `--model composer-2.5 --force agent '<touch a file>'` the shell command ran with no approval
+  // prompt and the footer read "Run Everything"; the same command with no mode flag stopped at
+  // "Run this command? Not in allowlist: touch"; `--mode plan` answered a "create a file" prompt
+  // with a written plan ("Ready to build?") and created nothing.
+  //
+  // `manual` → cursor's own default, NO flag, and that default really prompts: `approvalMode:
+  // "allowlist"` in ~/.cursor/cli-config.json, shell commands off the allowlist stop at a dialog.
+  //
+  // `auto` and `acceptEdits` are ABSENT ON PURPOSE. `auto` is DEFAULT_PERMISSION_MODE, so what it
+  // emits is what every untouched cursor node launches with after this lands. The candidate is
+  // `--auto-review` ("a server classifier auto-runs safe tool calls and prompts for the rest"), and
+  // it is a real Auto-shaped feature, but a bare cursor prompts for those calls: mapping it would
+  // have loosened every existing cursor node at upgrade, silently, with `modeSupported` answering
+  // true so no copy admitted it (the gemini `auto_edit` trap). Not emitted, so `modeSupported`
+  // says false and `unsupportedModesNote` admits it. No flag means "auto-approve edits, prompt for
+  // shell" either, so `acceptEdits` has no candidate at all. `--mode ask` (read-only Q&A) and
+  // `--sandbox` (a separate axis, like codex's) are deliberately not touched.
+  //
+  // `--force` over its alias `--yolo`: same code path ("Run Everything"), and `--force` is the name
+  // `--help` gives first.
+}
+
 /**
  * The agents that need a translation, flag and vocabulary together.
  *
@@ -167,6 +197,12 @@ const APPROVAL_DIALECTS: Partial<Record<AgentId, ApprovalDialect>> = {
     manualGapNote:
       'That default asks only when the model chooses to: `untrusted`, the policy that meant ' +
       'ask-every-time, was removed in codex-cli 0.149.0 and has no replacement.'
+  },
+  cursor: {
+    flag: '--mode',
+    modes: CURSOR_MODES,
+    manualIsDefault: true,
+    spell: (value) => (value === 'force' ? ['--force'] : ['--mode', value])
   }
 }
 
@@ -233,7 +269,7 @@ export function approvalFlags(
   const dialect = dialectFor(agentId)
   if (dialect) {
     const value = emittableValue(dialect, mode, caps)
-    return value ? [dialect.flag, value] : []
+    return value ? (dialect.spell?.(value) ?? [dialect.flag, value]) : []
   }
   // claude + grok keep their exact historical spelling, validated at the interpolation site.
   return hasPermissionMode(agentId) ? permissionModeFlag(mode) : []
@@ -245,7 +281,8 @@ export function approvalFlags(
  *
  * WHERE the flag lands is decided one layer up, by `createAgentNode`: with no `argvPromptSeparator`
  * (claude, gemini, codex) it goes LAST, keeping those command lines byte-identical; with one
- * (grok's `--`) it must go BEFORE the separator, because `--` is end-of-options.
+ * (grok's `--`, cursor's `agent`) it must go BEFORE the separator: `--` is end-of-options, and
+ * cursor's flags are root options that the `agent` subcommand reads (measured, see CURSOR_MODES).
  *
  * **A flag the command already carries is left alone (issue #601).** `cmd` is not always ours:
  * `settings.agentLaunchCommands` lets the user replace the program part with a wrapper, and a

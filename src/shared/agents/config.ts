@@ -186,8 +186,10 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // Agent") takes the prompt with no subcommands of its own: `cursor-agent agent whoami` opens
     // the TUI with "whoami" as the prompt. `stdin-after-start` is out: a first launch in a folder
     // shows a workspace-trust dialog that a typed prompt + Enter would answer.
-    // UNVERIFIED: whether root flags placed before `agent` reach the session. Moot while cursor
-    // joins no flag-emitting capability list; measure before it does.
+    // MEASURED (2026.09.28): flags BEFORE `agent` reach the session. `agent` is a commander
+    // subcommand with no options of its own; its action reads the ROOT program's options, and root
+    // parses `--model` / `--force` / `--mode` wherever they sit (before or after `agent`, both
+    // measured in the TUI). So the composers' flags-before-separator placement is correct.
     promptInjectionMode: 'argv',
     argvPromptSeparator: 'agent',
     // The wrapper script runs `exec -a "$0" node index.js`, so ps shows argv0 `cursor-agent`.
@@ -432,11 +434,24 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // renderer/state/permissionMode.ts. grok has accepted every mode we emit since 1.0.0, its first
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
-export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as const
+//
+// cursor joined with `manual`, `plan` and `bypassPermissions` only (see CURSOR_MODES in
+// approval-mode.ts). Its bare launch is `approvalMode: allowlist` (prompts for anything not on the
+// allowlist), so `auto` emits NO flag: the nearest flag, `--auto-review`, makes a server classifier
+// auto-run tool calls a bare session would prompt for, and `auto` is the DEFAULT mode, so it would
+// have widened every existing cursor node at upgrade.
+export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'cursor'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok'] as const
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok', 'cursor'] as const
+// Members of MODEL_SWITCH_CAPABLE whose models are their OWN CLI's catalogue and can never be
+// routed through the model gateway: grok (custom models live in ~/.grok/config.toml) and cursor
+// (`cursor-agent models` lists ~250 account-scoped ids; the gateway's ids are not among them).
+// Offering or defaulting a gateway id to one of these puts a `--model` on the line that names a
+// model outside its own catalogue (what cursor does with an unknown id is UNMEASURED), so every place
+// that hands out GATEWAY models asks `hasGatewayModels`, not `canSwitchModel`.
+export const OWN_MODEL_CATALOGUE = ['grok', 'cursor'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
@@ -573,6 +588,10 @@ export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABL
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
+/** Can the model GATEWAY's catalogue (its discovered ids, its default model) apply to this agent?
+ *  `canSwitchModel` minus the agents that carry their own catalogue (OWN_MODEL_CATALOGUE). */
+export const hasGatewayModels = (id: AgentId): boolean =>
+  canSwitchModel(id) && !includes(OWN_MODEL_CATALOGUE, id)
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
 
 /**

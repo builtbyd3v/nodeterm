@@ -1,4 +1,4 @@
-import { canSwitchModel, capabilityAgentId, type AgentId } from './config'
+import { canSwitchModel, capabilityAgentId, hasGatewayModels, type AgentId } from './config'
 import { shellSingleQuote } from '../shell-quote'
 import { expandEnvVars } from './expansion'
 
@@ -199,6 +199,12 @@ export function modelsForAgent(
   // gateway catalogue would put ids on the menu that its CLI rejects at launch: a picker that looks
   // like it worked and kills the node.
   if (capabilityAgentId(agentId) === 'grok') return [...grokModels]
+  // cursor: same rule, and no catalogue to hand over yet. Its list is `cursor-agent models`
+  // (account-scoped, network-backed, ~250 ids) and no menu can show it today: the restart menu's
+  // "Switch model" row needs a resumable agent (cursor is not one), and the transfer menu takes the
+  // gateway list. ponytail: no probe until a reachable consumer exists; the day cursor joins
+  // RESUMABLE_AGENTS, add a `cursorModelsFrom` parser + probe beside `grokModelsFrom` and return it here.
+  if (!hasGatewayModels(agentId)) return []
   return models
 }
 

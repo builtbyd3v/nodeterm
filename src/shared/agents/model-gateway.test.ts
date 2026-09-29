@@ -347,6 +347,22 @@ describe('modelsForAgent — grok is offered its OWN models, never the gateway c
   })
 })
 
+describe('modelsForAgent: cursor never gets the gateway catalogue either', () => {
+  it('returns nothing for cursor, whatever else is passed', () => {
+    const GATEWAY = [{ id: 'anthropic/claude-x' }]
+    expect(modelsForAgent(GATEWAY, 'cursor')).toEqual([])
+    expect(modelsForAgent(GATEWAY, 'cursor', [{ id: 'grok-4.6' }])).toEqual([])
+  })
+
+  it('still emits a flag for an explicit model (canvas-control --model), and no gateway env', () => {
+    expect(withAgentModel('cursor-agent', 'cursor', 'composer-2.5')).toBe(
+      "cursor-agent --model 'composer-2.5'"
+    )
+    const settings = { baseUrl: 'https://gw.example', apiKey: 'k' }
+    expect(modelGatewayEnv(settings as never, 'cursor', 'composer-2.5', {}, 'secret')).toEqual({})
+  })
+})
+
 describe('grok takes its model as a FLAG, and needs no gateway environment', () => {
   it('appends --model before anything else touches the line', () => {
     expect(withAgentModel('grok', 'grok', 'grok-4.5')).toBe("grok --model 'grok-4.5'")

@@ -18,8 +18,11 @@ import {
   canSwitchModel,
   createdAgentId,
   hasHooks,
+  hasGatewayModels,
   hasPermissionMode,
   hasUsage,
+  MODEL_SWITCH_CAPABLE,
+  OWN_MODEL_CATALOGUE,
   reportsOwnCopy,
   RENAME_CAPABLE,
   hasSharedIdentity,
@@ -49,9 +52,31 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     // grok joined once its leaf existed: `-m/--model` in the launch grammar plus `grok models` for
     // discovery. It is NOT in this list as an example of a non-capable agent any more.
     expect(canSwitchModel('grok')).toBe(true)
+    // cursor: `--model <id>` (a root option, measured before and after `agent`). Its models are its
+    // own catalogue, so it joins the list WITHOUT the gateway's models (OWN_MODEL_CATALOGUE).
+    expect(canSwitchModel('cursor')).toBe(true)
+    expect(hasGatewayModels('cursor')).toBe(false)
+    expect(hasGatewayModels('grok')).toBe(false)
+    for (const id of ['claude', 'codex', 'copilot'] as const)
+      expect(hasGatewayModels(id), id).toBe(true)
     for (const id of ['gemini', 'opencode', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
+      expect(hasGatewayModels(id), id).toBe(false)
     }
+  })
+
+  it('OWN_MODEL_CATALOGUE is a subset of the switch-capable list', () => {
+    for (const id of OWN_MODEL_CATALOGUE)
+      expect(MODEL_SWITCH_CAPABLE as readonly string[]).toContain(id)
+  })
+})
+
+describe('cursor capabilities', () => {
+  it('joins the permission-mode and model lists, and only those', () => {
+    expect(hasPermissionMode('cursor')).toBe(true)
+    expect(canSwitchModel('cursor')).toBe(true)
+    for (const can of [hasHooks, canResume, canRename, canReadTitle, canControlCanvas, hasUsage, canChat])
+      expect(can('cursor')).toBe(false)
   })
 })
 

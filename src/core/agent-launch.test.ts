@@ -155,6 +155,31 @@ describe("prepareAgentLaunch logical argv", () => {
     });
   });
 
+  it("puts Cursor's flags before its `agent` subcommand, not after the prompt", async () => {
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "bypassPermissions" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' '--force' 'agent' 'hi'" });
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "plan" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' '--mode' 'plan' 'agent' 'hi'" });
+    // The default mode emits nothing, so an untouched node's line is byte-identical to before.
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "auto" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' 'agent' 'hi'" });
+  });
+
   it("uses flag-prompt for OpenCode and preserves a trailing slash", async () => {
     await expect(
       prepareAgentLaunch(
