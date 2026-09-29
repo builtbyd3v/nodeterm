@@ -71,15 +71,6 @@ describe('MODEL_SWITCH_CAPABLE', () => {
   })
 })
 
-describe('cursor capabilities', () => {
-  it('joins the permission-mode and model lists, and only those', () => {
-    expect(hasPermissionMode('cursor')).toBe(true)
-    expect(canSwitchModel('cursor')).toBe(true)
-    for (const can of [hasHooks, canResume, canRename, canReadTitle, canControlCanvas, hasUsage, canChat])
-      expect(can('cursor')).toBe(false)
-  })
-})
-
 describe('copilot capabilities', () => {
   it('is a builtin with measured interactive launch, hooks, resume, and model switching', () => {
     expect(BUILTIN_AGENT_IDS).toContain('copilot')
@@ -333,8 +324,8 @@ describe('antigravity capabilities', () => {
     // `--after` asks this before accepting a dependency in an SSH project: a node that can never
     // report "done" there would hold its dependant QUEUED forever.
     expect(hasHooksOverSsh('antigravity')).toBe(false)
-    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity'])
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity')) {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity', 'cursor'])
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity' && a !== 'cursor')) {
       expect(hasHooksOverSsh(id), id).toBe(hasHooks(id))
     }
   })
@@ -400,6 +391,35 @@ describe('antigravity capabilities', () => {
     // No shared app-server mode, and agy does not announce its own copies.
     expect(hasSharedIdentity('antigravity')).toBe(false)
     expect(reportsOwnCopy('antigravity')).toBe(false)
+  })
+})
+
+/**
+ * Cursor's lists so far: AGENT_HOOK_TARGETS (badge, unread dot, completion notification, `--after`
+ * dependency and trigger target; leaves `normalizeCursor` + the `~/.cursor/hooks.json` installer),
+ * PERMISSION_MODE_CAPABLE and MODEL_SWITCH_CAPABLE (leaf: CURSOR_MODES in approval-mode.ts).
+ * Everything else is a separate leaf that does not exist yet; docs/cursor-agent.md says which.
+ */
+describe('cursor capabilities', () => {
+  it('reports status through its own hooks, on this machine only (no SSH installer yet)', () => {
+    expect(hasHooks('cursor')).toBe(true)
+    expect(hasHooksOverSsh('cursor')).toBe(false)
+  })
+
+  it('takes a permission mode and a model on its launch line', () => {
+    expect(hasPermissionMode('cursor')).toBe(true)
+    expect(canSwitchModel('cursor')).toBe(true)
+  })
+
+  it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
+    expect(reportsSessionEnd('cursor')).toBe(false)
+    for (const can of [
+      canContextLink, canSubagent, canRecur, canBranch, hasUsage, canTransferFrom, canRename,
+      canReadTitle, canChat, canControlCanvas, canResume, mintsSessionId
+    ]) {
+      expect(can('cursor')).toBe(false)
+    }
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
   })
 })
 

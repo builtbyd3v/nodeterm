@@ -205,6 +205,7 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
 // antigravity joined with ONLY this list: its normalizer (normalizeAntigravity) and its
 // installer are the leaves that exist. Every other list below is a separate leaf it does not have
 // yet — see the `antigravity capabilities` block in config.capabilities.test.ts for each reason.
+// cursor joined the same way (normalizeCursor + hooks/cursor.ts); see docs/cursor-agent.md.
 export const AGENT_HOOK_TARGETS = [
   'claude',
   'codex',
@@ -212,7 +213,8 @@ export const AGENT_HOOK_TARGETS = [
   'opencode',
   'grok',
   'copilot',
-  'antigravity'
+  'antigravity',
+  'cursor'
 ] as const
 // antigravity: `agy --conversation=<id>` — the `=` spelling agy prints in its own exit hint
 // (`agy --conversation=%s`, 1.2.12 binary). The id is the hook payload's `conversationId`, recorded
@@ -542,7 +544,7 @@ export const hasHooks = (id: AgentId): boolean => includes(AGENT_HOOK_TARGETS, i
  * has no installer for them on an SSH host yet. On an SSH project such a node never reports a
  * state, so nothing may WAIT on it (`--after`): the dependant would sit QUEUED forever.
  */
-export const LOCAL_ONLY_HOOK_AGENTS = ['antigravity'] as const
+export const LOCAL_ONLY_HOOK_AGENTS = ['antigravity', 'cursor'] as const
 /** Does this agent report status when its node runs on an SSH project's host? */
 export const hasHooksOverSsh = (id: AgentId): boolean =>
   hasHooks(id) && !includes(LOCAL_ONLY_HOOK_AGENTS, id)
