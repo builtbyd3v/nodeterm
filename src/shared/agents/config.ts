@@ -282,7 +282,11 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+// cursor joins with NO installer: cursor-agent 2026.09.28 lists `~/.claude/skills/get-linked-context`
+// in the `<agent_skills>` block of a real chat's own context (measured in its store.db), i.e. it reads
+// `~/.claude/skills` like grok. Its transcript is a SQLite store read by `core/cursor-chat.ts`.
+// UNVERIFIED: a user setting that switches that Claude-compat scan off.
+export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'cursor'] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family
@@ -333,7 +337,9 @@ export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
 // (`readChatTranscript`). Like the others it is NOT in CLAUDE_TRANSCRIPT_READABLE below.
 // opencode joined 2026-09-28: it has no transcript file at all (SQLite since 1.18), so its chat is
 // read through `opencode export <id>` (core/opencode-chat.ts) and it stays out of the list below.
-export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'opencode'] as const
+// cursor joined with `core/cursor-chat.ts`: a read-only `node:sqlite` read of its chat store, located
+// strictly by the whole-UUID chat id and routed before anything claude-shaped. Not in the list below.
+export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'opencode', 'cursor'] as const
 // CHAT_CAPABLE agents whose reader has NO remote leg: a remote (SSH) node's session lives on its
 // host, so core answers `unreadable` before touching anything — and the local reader never sets that
 // flag (copilot maps a failed local read to not-found for exactly this reason). So an unreadable read
@@ -342,7 +348,7 @@ export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'op
 // remote nodes are read on the host (`core/remote-grok-chat.ts`, `main/remote-codex-chat-page.ts`).
 // opencode has no remote leg either but is NOT here: its `unreadable` also means a failed LOCAL
 // `opencode export`, which Retry heals — the panel gives it its own copy (`exportError`) instead.
-export const CHAT_LOCAL_ONLY = ['gemini', 'copilot'] as const
+export const CHAT_LOCAL_ONLY = ['gemini', 'copilot', 'cursor'] as const
 // Agents whose transcript CLAUDE's own resolver can locate and parse — the gate for everything that
 // goes through `resolveTranscript` (the find bar's index, the meter's mount-time rehydration).
 //
@@ -353,7 +359,7 @@ export const CHAT_LOCAL_ONLY = ['gemini', 'copilot'] as const
 // shows data rather than hiding it. `config.capabilities.test.ts` pins that grok is absent.
 export const CLAUDE_TRANSCRIPT_READABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
-export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
+export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'cursor'] as const
 // Agents whose hooks announce that a session ENDED — i.e. whose orderly `/exit` we will hear about.
 //
 // Derived by reading `normalize.ts`, not by intent: exactly four normalizers map an event to
@@ -392,7 +398,9 @@ export const RENAME_CAPABLE = ['claude', 'grok'] as const
 // (SHARED_IDENTITY_CAPABLE below) a node owns a THREAD, and that thread carries a `Thread.name` we
 // can read over the server's own socket (core/codex-session-name.ts). There is still no measured
 // rename command, so it stays out of RENAME_CAPABLE — the read⊇write invariant holds either way.
-export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini'] as const
+// cursor: READ only — its `name` (AI-generated, or `/rename`) is in the chat store; `/rename` is a TUI
+// command whose typed form was not measured, so it is NOT in RENAME_CAPABLE.
+export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini', 'cursor'] as const
 // Agents whose canvas nodes share ONE managed CLI server per machine and keep a stable per-node
 // identity inside it, instead of each node owning a whole process tree.
 //

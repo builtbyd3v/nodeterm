@@ -86,6 +86,12 @@ describe('readAgentSessionName', () => {
     delete process.env.CODEX_HOME
   })
 
+  it("routes cursor to its chat store's reader: null for an unknown id, never claude's scan", async () => {
+    process.env.CURSOR_CONFIG_DIR = path.join(root, 'no-such-cursor-dir')
+    expect(await readAgentSessionName('66666666-e4c7-4f28-9d99-027f84c10837', undefined, 'cursor')).toBeNull()
+    delete process.env.CURSOR_CONFIG_DIR
+  })
+
   it('answers null for an empty session id without asking either reader', async () => {
     expect(await readAgentSessionName('', undefined, 'grok')).toBeNull()
     expect(await readAgentSessionName('')).toBeNull()

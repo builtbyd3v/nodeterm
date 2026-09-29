@@ -4,6 +4,7 @@ import {
   BUILTIN_AGENT_IDS,
   canBranch,
   canChat,
+  chatReadsLocalOnly,
   mintsSessionId,
   supportsSessionIdFlag,
   readsClaudeShapedTranscript,
@@ -414,8 +415,8 @@ describe('cursor capabilities', () => {
   it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
     expect(reportsSessionEnd('cursor')).toBe(false)
     for (const can of [
-      canContextLink, canSubagent, canRecur, canBranch, hasUsage, canTransferFrom, canRename,
-      canReadTitle, canChat, canControlCanvas, canResume, mintsSessionId
+      canSubagent, canRecur, canBranch, hasUsage, canRename, canControlCanvas, canResume,
+      mintsSessionId
     ]) {
       expect(can('cursor')).toBe(false)
     }
@@ -499,5 +500,21 @@ describe('title read vs rename write', () => {
   it('a custom agent claims neither', () => {
     expect(canReadTitle('custom:abc')).toBe(false)
     expect(canRename('custom:abc')).toBe(false)
+  })
+})
+
+describe('cursor capabilities (transcript leaf)', () => {
+  it("shows its conversation in ⌘M from its own SQLite store, never through claude's resolver", () => {
+    expect(canChat('cursor')).toBe(true)
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
+  })
+  it('is local-only for the chat view: a remote node says "not supported yet"', () => {
+    expect(chatReadsLocalOnly('cursor')).toBe(true)
+  })
+  it('joins context link, transfer-from and the title READ leg, but not the rename WRITE leg', () => {
+    expect(canContextLink('cursor')).toBe(true)
+    expect(canTransferFrom('cursor')).toBe(true)
+    expect(canReadTitle('cursor')).toBe(true)
+    expect(canRename('cursor')).toBe(false)
   })
 })

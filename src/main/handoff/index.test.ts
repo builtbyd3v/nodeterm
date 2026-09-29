@@ -33,6 +33,25 @@ describe('buildHandoff — grok as a transfer source', () => {
     expect(res).not.toEqual({ error: 'Transfer is not supported from grok.' })
   })
 
+  it('cursor is a wired source, and a remote cursor node is refused before anything is read', async () => {
+    const local = await buildHandoff({ sessionId: SESSION, agentId: 'cursor', sourceNodeId: 'term-1' })
+    expect(local).not.toEqual({ error: 'Transfer is not supported from cursor.' })
+    const remote = await buildHandoff({
+      sessionId: SESSION,
+      agentId: 'cursor',
+      sourceNodeId: 'term-1',
+      remote: {
+        isRemoteNode: () => true,
+        hookedTranscriptPath: () => '/should/never/be/read',
+        readRemoteFile: async () => {
+          throw new Error('read')
+        },
+        writeRemoteFile: async () => true
+      }
+    })
+    expect(remote).toEqual({ error: 'Transferring a Cursor conversation from a remote (SSH) session is not supported yet.' })
+  })
+
   it('still refuses an agent whose renderer really is unwritten', async () => {
     const res = await buildHandoff({
       sessionId: SESSION,
