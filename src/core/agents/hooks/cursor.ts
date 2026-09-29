@@ -1,4 +1,4 @@
-// Cursor Agent CLI status-hook installer — registered in hooks/index.ts (runs at every launch).
+// Cursor Agent CLI status-hook installer: registered in hooks/index.ts (runs at every launch).
 //
 // WHERE. `cursor-agent` reads `~/.cursor/hooks.json` (user), `<workspace>/.cursor/hooks.json`
 // (project) and, as Claude compat, the hooks of `~/.claude/settings.json`. The user file is SHARED

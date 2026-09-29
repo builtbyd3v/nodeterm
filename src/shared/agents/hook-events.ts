@@ -125,7 +125,7 @@ export const COPILOT_HOOK_EVENTS = [
  *     differences broke it is unknown (docs/cursor-agent.md §3), so none is added without a run
  *     that isolates it.
  *   - `preToolUse` is a GATE (Cursor reads its stdout as a permission decision), so our command must
- *     stay silent with exit 0 — see `buildManagedHookCommand`'s `silent`.
+ *     stay silent with exit 0, see `buildManagedHookCommand`'s `silent`.
  */
 export const CURSOR_HOOK_EVENTS = [
   'beforeSubmitPrompt',

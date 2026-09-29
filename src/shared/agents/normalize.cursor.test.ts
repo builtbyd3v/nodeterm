@@ -1,7 +1,7 @@
 // FIXTURE PROVENANCE: `__fixtures__/cursor/hook-payloads.json` was captured live from
 // cursor-agent 2026.09.28-64d2043 (headless runs, macOS). It holds NO `beforeSubmitPrompt`, `stop`
 // or `postToolUseFailure`: headless runs never fired the first two. Those three cases below use
-// payloads built from the bundle's proto, and say so — they pin OUR reading, not Cursor's wire.
+// payloads built from the bundle's proto, and say so: they pin OUR reading, not Cursor's wire.
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
