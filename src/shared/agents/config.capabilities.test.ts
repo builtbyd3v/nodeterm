@@ -308,8 +308,8 @@ describe('antigravity capabilities', () => {
     // `--after` asks this before accepting a dependency in an SSH project: a node that can never
     // report "done" there would hold its dependant QUEUED forever.
     expect(hasHooksOverSsh('antigravity')).toBe(false)
-    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity'])
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity')) {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity', 'cursor'])
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity' && a !== 'cursor')) {
       expect(hasHooksOverSsh(id), id).toBe(hasHooks(id))
     }
   })
@@ -375,6 +375,30 @@ describe('antigravity capabilities', () => {
     // No shared app-server mode, and agy does not announce its own copies.
     expect(hasSharedIdentity('antigravity')).toBe(false)
     expect(reportsOwnCopy('antigravity')).toBe(false)
+  })
+})
+
+/**
+ * Cursor joins with exactly ONE capability list, AGENT_HOOK_TARGETS: badge, unread dot, completion
+ * notification, `--after` dependency and trigger target. Leaves: `normalizeCursor` and the
+ * `~/.cursor/hooks.json` merge installer (hooks/cursor.ts). Everything else is a separate leaf that
+ * does not exist; docs/cursor-agent.md says which.
+ */
+describe('cursor capabilities', () => {
+  it('reports status through its own hooks, on this machine only (no SSH installer yet)', () => {
+    expect(hasHooks('cursor')).toBe(true)
+    expect(hasHooksOverSsh('cursor')).toBe(false)
+  })
+
+  it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
+    expect(reportsSessionEnd('cursor')).toBe(false)
+    for (const can of [
+      canContextLink, canSubagent, canRecur, canBranch, hasUsage, canTransferFrom, canRename,
+      canReadTitle, hasPermissionMode, canChat, canControlCanvas, canSwitchModel, mintsSessionId
+    ]) {
+      expect(can('cursor')).toBe(false)
+    }
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
   })
 })
 

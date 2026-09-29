@@ -975,6 +975,68 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
   return null
 }
 
+// Cursor Agent CLI payload. Every event carries the same envelope, MEASURED on cursor-agent
+// 2026.09.28 (src/shared/agents/__fixtures__/cursor/hook-payloads.json): `conversation_id` (the
+// chat id `cursor-agent --resume <id>` takes, verified), `session_id` (equal to it in every
+// capture), `generation_id`, `model`, `hook_event_name` (camelCase, the ONLY spelling), `cursor_version`,
+// `workspace_roots`, `user_email` and `transcript_path` (null until the first turn is written).
+// `cwd` exists on tool events only and was "" for Shell, so nothing here reads it.
+// `parent_tool_call_id` is the bundle's marker for a tool call made inside a subagent
+// (hooks_pb PreToolUseRequestQuery field 10; never seen on the wire, no subagent was run).
+// `status` on `stop` is also from the bundle/docs, never captured: the capture runs were headless
+// and headless runs do not fire `stop` or `beforeSubmitPrompt` at all.
+interface CursorPayload {
+  hook_event_name?: unknown
+  conversation_id?: unknown
+  session_id?: unknown
+  parent_tool_call_id?: unknown
+  status?: unknown
+}
+
+/**
+ * PURE. The event name is matched as a closed set of exact strings (rule 7); everything else,
+ * including the ~16 events we do not subscribe, is null.
+ *
+ * - `beforeSubmitPrompt` → `working` + `newTurn` (`newTurn` retires `lastTurnError`, #521).
+ * - `preToolUse` / `postToolUse` / `postToolUseFailure` → `working`. A tool call carrying
+ *   `parent_tool_call_id` is a subagent's and returns null: its `conversation_id` may be the
+ *   child's, and child activity must not drive the parent or replace its recorded session id.
+ * - `stop` → `done`; `interrupted` only for status `aborted`, `errored` only for `error`. Any
+ *   other status is a plain `done`, because `stop` ends the turn whatever it says.
+ *
+ * NEEDS YOU is deliberately absent: the AskQuestion tool fires no tool hook and Cursor's own
+ * approval prompt has none either (docs/cursor-agent.md §4). Guessing one would strobe.
+ *
+ * `sessionId` is `conversation_id`, falling back to `session_id`: the resume feature keys on it.
+ */
+export function normalizeCursor(env: RawHookEnvelope): NormalizedAgentEvent | null {
+  const p = env.payload as CursorPayload
+  const ev = typeof p.hook_event_name === 'string' ? p.hook_event_name : undefined
+  const sessionId =
+    typeof p.conversation_id === 'string' && p.conversation_id
+      ? p.conversation_id
+      : typeof p.session_id === 'string' && p.session_id
+        ? p.session_id
+        : undefined
+  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId }
+
+  if (ev === 'beforeSubmitPrompt') return { ...base, kind: 'state', state: 'working', newTurn: true }
+  if (ev === 'preToolUse' || ev === 'postToolUse' || ev === 'postToolUseFailure') {
+    if (typeof p.parent_tool_call_id === 'string' && p.parent_tool_call_id) return null
+    return { ...base, kind: 'state', state: 'working' }
+  }
+  if (ev === 'stop') {
+    return {
+      ...base,
+      kind: 'state',
+      state: 'done',
+      ...(p.status === 'aborted' ? { interrupted: true } : {}),
+      ...(p.status === 'error' ? { errored: true } : {})
+    }
+  }
+  return null
+}
+
 export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): NormalizedAgentEvent | null {
   if (agentId === 'claude') return normalizeClaude(env)
   if (agentId === 'codex') return normalizeCodex(env)
@@ -983,5 +1045,6 @@ export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): Normalized
   if (agentId === 'grok') return normalizeGrok(env)
   if (agentId === 'copilot') return normalizeCopilot(env)
   if (agentId === 'antigravity') return normalizeAntigravity(env)
+  if (agentId === 'cursor') return normalizeCursor(env)
   return null
 }
