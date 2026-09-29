@@ -12,6 +12,7 @@ export type BuiltinAgentId =
   | 'grok'
   | 'copilot'
   | 'antigravity'
+  | 'cursor'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -89,7 +90,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'gemini',
   'opencode',
   'grok',
-  'copilot'
+  'copilot',
+  'cursor'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -171,6 +173,27 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     promptInjectionMode: 'flag-interactive',
     promptFlag: '--prompt-interactive',
     expectedProcess: 'agy'
+  },
+  cursor: {
+    // Cursor Agent CLI. Measured on `cursor-agent` 2026.09.23-86fc751 (macOS).
+    label: 'Cursor',
+    color: '#6b7280',
+    // Not `agent`: the CLI installs that alias too, and grok ships a binary of the same name.
+    launchCmd: 'cursor-agent',
+    // Usage is `agent [options] [command] [prompt...]`, so a one-word prompt collides with a
+    // subcommand (`login`, `update`, `ls`, ...). Unlike grok, `--` does NOT help: measured,
+    // `cursor-agent -- whoami` still runs `whoami`. The `agent` subcommand ("Start the Cursor
+    // Agent") takes the prompt with no subcommands of its own: `cursor-agent agent whoami` opens
+    // the TUI with "whoami" as the prompt. `stdin-after-start` is out: a first launch in a folder
+    // shows a workspace-trust dialog that a typed prompt + Enter would answer.
+    // UNVERIFIED: whether root flags placed before `agent` reach the session. Moot while cursor
+    // joins no flag-emitting capability list; measure before it does.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: 'agent',
+    // The wrapper script runs `exec -a "$0" node index.js`, so ps shows argv0 `cursor-agent`.
+    expectedProcess: 'cursor-agent',
+    // The two env overrides `cursor-agent --help` names for auth and endpoint.
+    vanillaEnvPattern: '^CURSOR_API_(KEY|ENDPOINT)$'
   }
 }
 

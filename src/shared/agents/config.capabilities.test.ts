@@ -172,10 +172,11 @@ describe('grok capabilities', () => {
     expect(AGENT_CONFIG.grok.argvPromptSeparator).toBe('--')
   })
 
-  it('is the ONLY agent that asks for a separator', () => {
+  it('is the only agent besides cursor that asks for a separator', () => {
     // claude takes a positional too, but has no subcommand a one-word prompt could shadow — and
-    // adding `--` there would change a command line that works today.
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok')) {
+    // adding `--` there would change a command line that works today. cursor needs one for the
+    // same reason as grok, but its CLI ignores `--` (see the cursor block below).
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok' && a !== 'cursor')) {
       expect(AGENT_CONFIG[id].argvPromptSeparator, id).toBeUndefined()
     }
   })
