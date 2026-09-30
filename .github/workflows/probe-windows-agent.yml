@@ -73,6 +73,7 @@ jobs:
           $w = "$env:RUNNER_TEMP\p"; $d = "$env:RUNNER_TEMP\k"; $a = '\\.\pipe\openssh-ssh-agent'
           node "$w\probe.mjs" $a constrained "$d\ed" "$d\ec" "$d\rsa"
           ssh-add -l
+          exit 0
       - name: encoder plain + sign + restart + remove
         timeout-minutes: 2
         run: |
@@ -88,3 +89,4 @@ jobs:
           node "$w\probe.mjs" $a remove "$d\ed" "$d\ec" "$d\rsa"
           ssh-add -l
           reg query HKCU\Software\OpenSSH\Agent\Keys
+          exit 0
