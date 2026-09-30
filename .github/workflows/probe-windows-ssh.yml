@@ -1,0 +1,85 @@
+# THROWAWAY PROBE (branch probe/windows-ssh only, never merged): what does an SSH project's
+# connection model do on Windows? Runs the same ssh invocations the desktop uses
+# (src/core/remote-ssh/control-master.ts) against a local OpenSSH server, with both the Windows
+# built-in ssh and Git for Windows' ssh, and counts full logins on the server.
+name: probe-windows-ssh
+on:
+  push:
+    branches: [probe/windows-ssh]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install and start OpenSSH server, trust our key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-WindowsCapability -Online -Name OpenSSH.Server* | Format-List Name,State
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+          Start-Service sshd
+          Get-Service sshd | Format-List Name,Status
+          New-Item -ItemType Directory -Force "$HOME\.ssh" | Out-Null
+          $PSNativeCommandArgumentPassing = 'Standard'  # so -N '' reaches ssh-keygen as an empty arg
+          & "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '' -f "$HOME\.ssh\id_ed25519"
+          Get-ChildItem "$HOME\.ssh" | Format-Table Name,Length
+          $pub = Get-Content "$HOME\.ssh\id_ed25519.pub"
+          # The runner user is an administrator: default sshd_config reads this file for admins.
+          Set-Content -Path "$env:ProgramData\ssh\administrators_authorized_keys" -Value $pub
+          icacls "$env:ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+          Set-Content -Path "$HOME\.ssh\authorized_keys" -Value $pub
+          Restart-Service sshd
+          "whoami: $(whoami)"
+
+      - name: Probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = $env:USERNAME
+          $key = "$HOME\.ssh\id_ed25519"
+          function Logins { (Get-WinEvent -LogName 'OpenSSH/Operational' -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'Accepted publickey' }).Count }
+          function Run($label, $exe, [string[]]$a, $timeoutSec = 20) {
+            $out = "$env:RUNNER_TEMP\o.txt"; $err = "$env:RUNNER_TEMP\e.txt"
+            $p = Start-Process -FilePath $exe -ArgumentList $a -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit($timeoutSec * 1000)) { $p.Kill(); $code = 'TIMEOUT' } else { $code = $p.ExitCode }
+            $o = (Get-Content $out -Raw) -replace "`r",''; $e = (Get-Content $err -Raw) -replace "`r",''
+            "---- $label  exit=$code"
+            if ($o) { "  stdout: $($o.Trim())" }
+            if ($e) { "  stderr: $($e.Trim())" }
+          }
+          $common = @('-o','StrictHostKeyChecking=accept-new','-o','BatchMode=yes','-o','PasswordAuthentication=no','-i',$key,'-o','IdentitiesOnly=yes')
+          $sshes = @(
+            @{ name = 'windows-builtin'; exe = "$env:WINDIR\System32\OpenSSH\ssh.exe"; agent = "$env:WINDIR\System32\OpenSSH\ssh-agent.exe" },
+            @{ name = 'git-for-windows'; exe = 'C:\Program Files\Git\usr\bin\ssh.exe'; agent = 'C:\Program Files\Git\usr\bin\ssh-agent.exe' }
+          )
+          foreach ($s in $sshes) {
+            "=================== $($s.name): $($s.exe)"
+            if (-not (Test-Path $s.exe)) { "  (not present)"; continue }
+            Run 'version' $s.exe @('-V')
+            $dir = "$HOME\.nodeterm\ssh-cm"; New-Item -ItemType Directory -Force $dir | Out-Null
+            # Git's ssh is MSYS: give it a POSIX-style path too.
+            $cp = if ($s.name -eq 'git-for-windows') { '~/.nodeterm/ssh-cm/probe-git.sock' } else { "$dir\probe-win.sock" }
+            $before = Logins
+            Run 'plain exec (baseline, one login)' $s.exe ($common + @("$user@localhost",'echo','plain-ok'))
+            "  logins +$((Logins) - $before)"
+            # The desktop's master: masterArgs() minus askpass/agent specifics.
+            $before = Logins
+            Run 'master -M -N -f ControlPersist' $s.exe ($common + @('-M','-N','-f','-o','ControlMaster=auto','-o',"ControlPath=$cp",'-o','ControlPersist=300',"$user@localhost")) 30
+            "  logins +$((Logins) - $before)"
+            Run 'master check (-O check)' $s.exe ($common + @('-o',"ControlPath=$cp",'-O','check',"$user@localhost"))
+            # Five children the way childArgs() builds them. With working mux: 0 new logins.
+            $before = Logins
+            1..5 | ForEach-Object { Run "child $_ via mux" $s.exe ($common + @('-o','ControlMaster=auto','-o',"ControlPath=$cp",'-o','ControlPersist=300',"$user@localhost",'echo',"child-$_")) }
+            "  logins for 5 children +$((Logins) - $before)   (0 = multiplexing works, 5 = every child logged in)"
+            Run 'remote forward over mux (-O forward -R)' $s.exe ($common + @('-o',"ControlPath=$cp",'-O','forward','-R','127.0.0.1:47123:127.0.0.1:47124',"$user@localhost"))
+            Run 'master exit (-O exit)' $s.exe ($common + @('-o',"ControlPath=$cp",'-O','exit',"$user@localhost"))
+            # App-private agent: ssh-agent -D -a <sock> (src/main/remote-ssh/ssh-agent.ts).
+            $asock = if ($s.name -eq 'git-for-windows') { '~/.nodeterm/agent-probe.sock' } else { "$HOME\.nodeterm\agent-probe.sock" }
+            Run 'ssh-agent -D -a <sock> (5s)' $s.agent @('-D','-a',$asock) 5
+          }
+          "=================== which ssh does PATH resolve (what findExecutableSync finds)"
+          Get-Command ssh -All -ErrorAction SilentlyContinue | Format-Table Source
+          "=================== sh / curl for the askpass helper"
+          Get-Command sh, curl.exe -ErrorAction SilentlyContinue | Format-Table Name,Source
