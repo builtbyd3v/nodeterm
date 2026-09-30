@@ -5,6 +5,7 @@ on:
 jobs:
   probe:
     runs-on: windows-latest
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -21,15 +22,19 @@ jobs:
           Start-Service ssh-agent
           Get-Service ssh-agent
           node -v
+          "--- ssh -G addkeystoagent spellings"
+          foreach ($v in @('yes','no','confirm','ask','1h','confirm 30m')) { "Host foo`n AddKeysToAgent $v" | Out-File -Encoding ascii "$env:RUNNER_TEMP\cfg"; ssh -F "$env:RUNNER_TEMP\cfg" -G foo | Select-String addkeystoagent }
       - name: keys
         run: |
           $d = "$env:RUNNER_TEMP\k"; New-Item -ItemType Directory $d | Out-Null
           ssh-keygen -q -t ed25519 -N pw -f "$d\ed"
           ssh-keygen -q -t ecdsa -b 256 -N pw -f "$d\ec"
           ssh-keygen -q -t rsa -b 3072 -N pw -f "$d\rsa"
-          ssh-keygen -q -t ed25519 -N '""' -f "$d\plain"
+          ssh-keygen -q -t ed25519 -N '' -f "$d\plain"
+          "check plain is unencrypted:"; ssh-keygen -y -P '' -f "$d\plain"; "exit=$LASTEXITCODE"
           Get-ChildItem $d
       - name: ssh-add -t (lifetime) and -c (confirm) with the stock client
+        timeout-minutes: 3
         run: |
           $d = "$env:RUNNER_TEMP\k"
           ssh-add -t 5 "$d\plain"; "ssh-add -t exit=$LASTEXITCODE"
@@ -38,6 +43,7 @@ jobs:
           ssh-add -l
           ssh-add -D; "ssh-add -D exit=$LASTEXITCODE"
       - name: ssh-add plain, registry, service restart
+        timeout-minutes: 3
         run: |
           $d = "$env:RUNNER_TEMP\k"
           ssh-add "$d\plain"; "ssh-add exit=$LASTEXITCODE"
@@ -54,6 +60,7 @@ jobs:
           "--- after ssh-add -D registry"
           reg query HKCU\Software\OpenSSH\Agent /s
       - name: our encoder against the real agent
+        timeout-minutes: 3
         run: |
           $w = "$env:RUNNER_TEMP\p"; New-Item -ItemType Directory $w | Out-Null
           Copy-Item probe\probe.mjs $w; Copy-Item src\core\remote-ssh\native\agent-add.ts $w
