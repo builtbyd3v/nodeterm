@@ -59,29 +59,32 @@ jobs:
           ssh-add -D
           "--- after ssh-add -D registry"
           reg query HKCU\Software\OpenSSH\Agent /s
-      - name: our encoder against the real agent
-        timeout-minutes: 3
+      - name: install ssh2 for the encoder probe
+        timeout-minutes: 5
         run: |
           $w = "$env:RUNNER_TEMP\p"; New-Item -ItemType Directory $w | Out-Null
           Copy-Item probe\probe.mjs $w; Copy-Item src\core\remote-ssh\native\agent-add.ts $w
-          Push-Location $w; npm init -y | Out-Null; npm i ssh2@1.17.0 --silent; Pop-Location
-          $d = "$env:RUNNER_TEMP\k"; $a = '\\.\pipe\openssh-ssh-agent'
-          "=== constrained (lifetime 5s)"
+          Set-Content "$w\package.json" '{"name":"p","version":"1.0.0","type":"module"}'
+          npm install --prefix $w ssh2@1.17.0 --no-audit --no-fund --ignore-scripts
+          "installed: $LASTEXITCODE"
+      - name: encoder constrained
+        timeout-minutes: 2
+        run: |
+          $w = "$env:RUNNER_TEMP\p"; $d = "$env:RUNNER_TEMP\k"; $a = '\\.\pipe\openssh-ssh-agent'
           node "$w\probe.mjs" $a constrained "$d\ed" "$d\ec" "$d\rsa"
-          reg query HKCU\Software\OpenSSH\Agent /s
-          Start-Sleep 8
-          "=== 8s later"
-          node "$w\probe.mjs" $a list
-          ssh-add -D
-          "=== plain"
+          ssh-add -l
+      - name: encoder plain + sign + restart + remove
+        timeout-minutes: 2
+        run: |
+          $w = "$env:RUNNER_TEMP\p"; $d = "$env:RUNNER_TEMP\k"; $a = '\\.\pipe\openssh-ssh-agent'
           node "$w\probe.mjs" $a plain "$d\ed" "$d\ec" "$d\rsa"
           ssh-add -l
-          "=== signing through the agent with an added key (ssh-keygen -Y sign uses the agent)"
-          Copy-Item "$d\ed.pub" "$w\ed.pub"; "hello" | Out-File -Encoding ascii "$w\msg"
-          ssh-keygen -Y sign -f "$w\ed.pub" -n file "$w\msg"; "sign exit=$LASTEXITCODE"
+          reg query HKCU\Software\OpenSSH\Agent\Keys
+          "hello" | Out-File -Encoding ascii "$w\msg"
+          foreach ($k in @('ed','ec','rsa')) { Copy-Item "$d\$k.pub" "$w\x.pub" -Force; Remove-Item "$w\msg.sig" -ErrorAction SilentlyContinue; ssh-keygen -Y sign -f "$w\x.pub" -n file "$w\msg" 2>&1 | Out-Null; "$k sign via agent exit=$LASTEXITCODE" }
           Restart-Service ssh-agent -Force
           "=== after restart"
-          node "$w\probe.mjs" $a list
-          "=== remove"
+          ssh-add -l
           node "$w\probe.mjs" $a remove "$d\ed" "$d\ec" "$d\rsa"
-          reg query HKCU\Software\OpenSSH\Agent /s
+          ssh-add -l
+          reg query HKCU\Software\OpenSSH\Agent\Keys
