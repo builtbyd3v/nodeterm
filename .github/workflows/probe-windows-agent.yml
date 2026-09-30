@@ -1,0 +1,80 @@
+name: probe-windows-agent
+on:
+  push:
+    branches: [probe/windows-ssh-agent-add]
+jobs:
+  probe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: versions and service
+        run: |
+          ssh -V
+          Get-Service ssh-agent | Format-List *
+          Set-Service ssh-agent -StartupType Manual
+          Start-Service ssh-agent
+          Get-Service ssh-agent
+          node -v
+      - name: keys
+        run: |
+          $d = "$env:RUNNER_TEMP\k"; New-Item -ItemType Directory $d | Out-Null
+          ssh-keygen -q -t ed25519 -N pw -f "$d\ed"
+          ssh-keygen -q -t ecdsa -b 256 -N pw -f "$d\ec"
+          ssh-keygen -q -t rsa -b 3072 -N pw -f "$d\rsa"
+          ssh-keygen -q -t ed25519 -N '""' -f "$d\plain"
+          Get-ChildItem $d
+      - name: ssh-add -t (lifetime) and -c (confirm) with the stock client
+        run: |
+          $d = "$env:RUNNER_TEMP\k"
+          ssh-add -t 5 "$d\plain"; "ssh-add -t exit=$LASTEXITCODE"
+          ssh-add -l; "list exit=$LASTEXITCODE"
+          ssh-add -c "$d\plain"; "ssh-add -c exit=$LASTEXITCODE"
+          ssh-add -l
+          ssh-add -D; "ssh-add -D exit=$LASTEXITCODE"
+      - name: ssh-add plain, registry, service restart
+        run: |
+          $d = "$env:RUNNER_TEMP\k"
+          ssh-add "$d\plain"; "ssh-add exit=$LASTEXITCODE"
+          ssh-add -l
+          "--- registry HKCU\Software\OpenSSH\Agent"
+          reg query HKCU\Software\OpenSSH\Agent /s
+          Restart-Service ssh-agent -Force
+          "--- after Restart-Service"
+          ssh-add -l
+          Stop-Service ssh-agent -Force; Start-Sleep 2; Start-Service ssh-agent
+          "--- after Stop+Start"
+          ssh-add -l
+          ssh-add -D
+          "--- after ssh-add -D registry"
+          reg query HKCU\Software\OpenSSH\Agent /s
+      - name: our encoder against the real agent
+        run: |
+          $w = "$env:RUNNER_TEMP\p"; New-Item -ItemType Directory $w | Out-Null
+          Copy-Item probe\probe.mjs $w; Copy-Item src\core\remote-ssh\native\agent-add.ts $w
+          Push-Location $w; npm init -y | Out-Null; npm i ssh2@1.17.0 --silent; Pop-Location
+          $d = "$env:RUNNER_TEMP\k"; $a = '\\.\pipe\openssh-ssh-agent'
+          "=== constrained (lifetime 5s)"
+          node "$w\probe.mjs" $a constrained "$d\ed" "$d\ec" "$d\rsa"
+          reg query HKCU\Software\OpenSSH\Agent /s
+          Start-Sleep 8
+          "=== 8s later"
+          node "$w\probe.mjs" $a list
+          ssh-add -D
+          "=== plain"
+          node "$w\probe.mjs" $a plain "$d\ed" "$d\ec" "$d\rsa"
+          ssh-add -l
+          "=== signing through the agent with an added key (ssh-keygen -Y sign uses the agent)"
+          Copy-Item "$d\ed.pub" "$w\ed.pub"; "hello" | Out-File -Encoding ascii "$w\msg"
+          ssh-keygen -Y sign -f "$w\ed.pub" -n file "$w\msg"; "sign exit=$LASTEXITCODE"
+          Restart-Service ssh-agent -Force
+          "=== after restart"
+          node "$w\probe.mjs" $a list
+          "=== remove"
+          node "$w\probe.mjs" $a remove "$d\ed" "$d\ec" "$d\rsa"
+          reg query HKCU\Software\OpenSSH\Agent /s
