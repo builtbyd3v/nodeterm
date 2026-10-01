@@ -2447,6 +2447,7 @@ body,
 .term-node__close,
 .term-node__move-worktree,
 .term-node__hide-fanout,
+.term-node__share,
 .term-node__tidy-fanout {
   display: inline-flex;
   align-items: center;
@@ -2476,6 +2477,7 @@ body,
 .term-node__maximize:hover,
 .term-node__move-worktree:hover,
 .term-node__hide-fanout:hover,
+.term-node__share:hover:not(:disabled),
 .term-node__tidy-fanout:hover {
   background: rgba(var(--tint-rgb), 0.1);
   color: var(--text);
@@ -2487,7 +2489,8 @@ body,
   color: var(--danger);
 }
 
-.term-node__ai:disabled {
+.term-node__ai:disabled,
+.term-node__share:disabled {
   opacity: 0.6;
   cursor: default;
 }

@@ -416,7 +416,8 @@ carry it to teammates and the canvas authority would write it into the git-share
   sessions-sidebar row; hideable as `live-link`), the kanban card menu (per-project board AND the Omni
   board's lanes, non-active projects included — a viewer of a node with no Session held spawns its own
   read-only tmux client, so on a machine whose local terminals are tmux the node need not be on screen),
-  the card modal header action, the palette ("Manage live links", and "Stop all live links (every
+  the terminal node's header button (between Comments and the eye; hideable as `share-link` — the LIVE
+  chip never is), the card modal header action, the palette ("Manage live links", and "Stop all live links (every
   machine on this license)" for a Pro owner or while a link is listed), Settings → Live links (Remote &
   team). Each row is judged by its node's OWN project's session (`liveLinkMenuItemsFor`, D2/M1).
   ProCompare lists "Live read-only
@@ -579,7 +580,10 @@ Visual checks (renderer, Mac and a Server Edition browser tab):
 26. Sessions sidebar row menu — active project and a non-active project (Duplicate · Share live link… ·
     End session).
 27. Kanban card menu (per-project, after the account rows) and the Omni board lane card menu.
-28. Card modal header: the broadcast action between ✦ and the comments button; disabled look + tooltip
+28. Terminal node header: the broadcast button between Comments and the eye, 22 px like its
+    neighbours; disabled look + tooltip on a relay tab, in a Server Edition tab and at 5 links; hidden
+    from Settings → Appearance → Terminal header buttons.
+    Card modal header: the broadcast action between ✦ and the comments button; disabled look + tooltip
     (Chromium shows `title` on disabled buttons — confirm on the packaged build).
 29. The create dialog: 460 px `.confirm` shell, radios wrapping, the warning wash, the URL row with
     Copy/Copied!, "until HH:MM" in 12/24 h locales; long node titles; dark + light; Liquid Glass.

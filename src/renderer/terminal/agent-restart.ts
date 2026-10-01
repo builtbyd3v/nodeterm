@@ -24,7 +24,7 @@ import {
  *  an unknown CLI has no safe way to be asked to quit. One entry turns on both surfaces at once:
  *  the single-node "Restart agent (resume)" row in the node context menu, and the bulk "restart
  *  idle agents" action (pane menu + command palette). There is no header button for either —
- *  `HIDEABLE_HEADER_BUTTONS` is refresh / mic / ai-name / comments. The matching relaunch line
+ *  `HIDEABLE_HEADER_BUTTONS` holds no restart entry. The matching relaunch line
  *  always comes from `resumeCommand`.
  *
  *  Each value is the CLI's own DOCUMENTED PRIMARY, and is sent BARE:
