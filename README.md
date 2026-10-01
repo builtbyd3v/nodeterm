@@ -248,34 +248,34 @@ your logo goes in this grid and on [nodeterm.dev](https://nodeterm.dev), and you
 requests go first.
 
 <p align="center">
-  <b>0 of 10 spots taken</b> · <a href="https://github.com/sponsors/eneskirca">Become a Founding Sponsor →</a>
+  <b>0 of 10 spots taken</b> · <a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04">Become a Founding Sponsor →</a>
 </p>
 
 <!-- Taking a spot: replace one open cell (in order, top-left first) with
        <td align="center" width="20%"><a href="SPONSOR_URL"><img src="docs/assets/sponsors/SPONSOR.svg" alt="SPONSOR NAME" width="136" /></a></td>
      The logo needs a transparent background that reads on GitHub's light AND dark themes (or wrap it in a <picture>
-     with a prefers-color-scheme: dark <source>). Bump the "N of 10 spots taken" line in the same edit, and when the
-     tenth spot is taken, retire the $200 tier on GitHub Sponsors: existing sponsors stay on it, nobody new can join. -->
+     with a prefers-color-scheme: dark <source>). Bump the "N of 10 spots taken" line in the same edit. The spots are sold through a Stripe
+     payment link limited to 10 payments: it deactivates itself when the tenth is taken (existing subscriptions keep
+     renewing). If a sponsor cancels, raise the limit by one to reopen their spot. -->
 <table>
   <tr>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
   </tr>
   <tr>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
-    <td align="center" width="20%"><a href="https://github.com/sponsors/eneskirca"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
   </tr>
 </table>
 
-Prefer a smaller amount? Every tier on the [sponsor page](https://github.com/sponsors/eneskirca)
-helps — and so does a ⭐. Need an invoice or a different arrangement? Write to
-support@nodeterm.dev.
+Prefer a smaller amount, need an invoice, or want a different arrangement? Write to
+support@nodeterm.dev — and a ⭐ helps too.
 
 ## 🛠 Build from source
 
