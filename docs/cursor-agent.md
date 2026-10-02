@@ -66,7 +66,7 @@ Traps found:
 | event | result |
 |---|---|
 | `beforeSubmitPrompt` | `working`, `newTurn` |
-| `preToolUse` / `postToolUse` / `postToolUseFailure` | `working`; null if `parent_tool_call_id` is set (subagent) |
+| `preToolUse` / `postToolUse` / `postToolUseFailure` | `working`; null for a subagent's call (`isCursorChildToolEvent`); the parent's `Task` preToolUse is `subagent-start` (see "Orchestration parity") |
 | `stop` | `done`; `interrupted` if `status==="aborted"`, `errored` if `"error"` |
 | anything else | null |
 
@@ -104,8 +104,8 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 - Not joined (each is its own leaf): `RESUMABLE_AGENTS` (id is recorded and `--resume <id>` is
   verified; the launch grammar with the `agent` subcommand is not), chat/transfer/context link
   (transcript shape is only seen as JSONL user/assistant/tool_use lines), usage meter (`stop`
-  carries token counts, window unmeasured), canvas control, rename, permission modes, model switch,
-  subagents, `SESSION_END_CAPABLE`.
+  carries token counts, window unmeasured), permission modes, model switch, `SESSION_END_CAPABLE`.
+  (Canvas control, rename and subagents joined later: "Orchestration parity" below.)
 
 ## 8. Device checklist (unverified)
 
@@ -113,8 +113,7 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
    still runs from tool events but text-only turns never show RUNNING.
 2. `stop` payload: `status` values (`completed|aborted|error` assumed), and that Esc fires it.
 3. Bisect the 18-event stream failure (add events back one at a time in a headless run).
-4. Subagent behaviour: is `parent_tool_call_id` set, which `conversation_id` do child events carry,
-   does a child fire `stop`.
+4. ~~Subagent behaviour~~ measured on 2026.10.01, see "Orchestration parity".
 5. Does an interactive exit fire `sessionEnd` (would allow `SESSION_END_CAPABLE`).
 6. Any hook for the approval prompt or a live `AskQuestion` (needed for NEEDS YOU).
 7. Hook latency inside a node (script backgrounds the POST; expected small).
@@ -203,7 +202,7 @@ are read. Compaction replaces the model context, so pre-compaction turns are not
 
 `get-linked-context` discovery needs no installer: cursor-agent lists `~/.claude/skills/get-linked-context`
 in its own `<agent_skills>` (measured), like grok. The composer's model label, effort, plan/question
-cards and `at` timestamps are not supported. `/rename` is not in `RENAME_CAPABLE` (typed form unmeasured).
+cards and `at` timestamps are not supported. `/rename` joined `RENAME_CAPABLE` later ("Orchestration parity").
 
 ## Device checklist (not verified)
 
@@ -211,3 +210,92 @@ cards and `at` timestamps are not supported. `/rename` is not in `RENAME_CAPABLE
 2. A chat with a very long history (compaction) and one over 16 MiB.
 3. Title chip after cursor auto-names an interactive chat (print mode leaves `New Agent`).
 4. Server Edition on Linux and Windows path hashing of the cwd bucket (only the id scan is relied on).
+
+## Orchestration parity (canvas control, subagents, rename, loop)
+
+Measured on `cursor-agent` 2026.10.01-e373342 (it auto-updated from 2026.09.28 during the work),
+macOS, in the INTERACTIVE TUI inside a private tmux server, scratch workspace with a project
+`.cursor/hooks.json` logger for ten events (incl. `subagentStart`/`subagentStop`). Five model turns
+(composer-2.5). Fixture: `src/shared/agents/__fixtures__/cursor/subagent-payloads.json`.
+
+### Canvas control (`CANVAS_CONTROL_CAPABLE`)
+
+Membership is the whole wiring, like grok: it sets `NODETERM_CANVAS_CONTROL` (`buildPtyEnv`,
+`remoteHookEnvArgs`) and lets `controlRouting`/the Server factory accept a cursor source. Discovery:
+asked to list its skills, cursor named `~/.claude/skills/manage-nodeterm-canvas/SKILL.md` and
+`get-linked-context`. The bundle loads skill roots in this order: `~/.cursor/skills-cursor` (built-in),
+`~/.cursor/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, plugins; the three
+third-party roots are gated by `thirdPartyExtensibility` (CLI default on; a team setting could turn
+it off). Trap: cursor TRUNCATES a long skill list ("52 additional skills were omitted" here), from
+the tail. `~/.claude/skills` sits third, so it survived; a user with hundreds of `~/.cursor/skills`
+could push it out. No `~/.cursor/skills` installer was added (ponytail: add one beside the claude
+skill install if that is ever seen).
+
+### Subagents (`SUBAGENT_CAPABLE`)
+
+Three runs (two built-in `explore`, one custom `.cursor/agents` subagent), all the same:
+
+| fact | measured |
+|---|---|
+| `subagentStart` / `subagentStop` | never fired, although subscribed |
+| parent `Task` tool | `preToolUse` (with `tool_input.subagent_type`, `description`, `prompt`) and NO `postToolUse` |
+| child tool events | `conversation_id` = `generation_id` = the CHILD's chat id; no `parent_tool_call_id`; `transcript_path` null on its first preToolUse, its own JSONL after |
+| ordering | synchronous: every child event landed before the parent's `stop` |
+| correlating key | none in any hook payload. The child's `store.db` meta has `subagentInfo {parentAgentId, rootParentAgentId, toolCallId, typeName}`; `toolCallId` == the parent `Task`'s `tool_use_id` |
+| child transcript | `<config>/projects/<slug>/agent-transcripts/<childId>/<childId>.jsonl`, append-only, ends `{"type":"turn_ended","status":"success"}`; assistant text often `[REDACTED]` |
+
+So: `normalizeCursor` turns the parent `Task` preToolUse into `subagent-start` (key `tool_use_id`),
+and returns null for a child's tool event (`isCursorChildToolEvent`: `generation_id ===
+conversation_id`). That rule also fixed a real bug: child events used to drive the parent badge AND
+replace the node's recorded session id (the resume id) with the child's. The END and the live tail
+live in ONE core helper both shells call (`core/cursor-subagents.ts`, `createCursorSubagentTracker`):
+the parent's `stop` emits `subagent-end` for every Task opened in that turn, and a child is tailed
+(`subagentTail.trackFile` + `createCursorSubagentFormatter` over its JSONL, path jailed under
+`<config>/projects/`) when exactly one of the node's open Tasks is unclaimed.
+
+Trade-offs, stated: a HEADLESS (`-p`) run has `generation_id === conversation_id` on its own tool
+events (2026.09.28 capture), so they now read as a child's and drive nothing; headless runs fire no
+`beforeSubmitPrompt`/`stop` either, so those events only ever lit a RUNNING badge nothing cleared.
+Parallel Tasks get cards but no tail (ponytail: read the child meta's `toolCallId` to claim them). A
+lost `stop` (network reconnect) leaves the cards to the shared `WORKING_STALE_MS` decay. Not
+subscribed: `subagentStart`/`subagentStop` (never fired; `subagentStart` is a GATING event, so a
+subscription is only risk).
+
+### Rename (`RENAME_CAPABLE`)
+
+`/rename <name>` is a local TUI command (`agentStore.setMetadata("name")`, no model call, no hook)
+and lands in the store meta `name` the read leg (`TITLE_READ_CAPABLE`) already reads, so read ⊇
+write holds. MEASURED: nodeterm's one-shot `sendText` (bracketed paste and Enter in ONE tmux
+invocation) left `/rename x` sitting unsubmitted in the composer; the same paste followed by a bare
+Enter as a SECOND invocation renamed the chat (meta `name` changed). Hence `SEPARATE_SUBMIT_AGENTS`
+(`submitsSeparately`) and the two-step push in `pushSessionRename` (paste, then `sendText('')` =
+bare Enter, only after the paste succeeded). The built-in `rename-chat` skill is model-driven
+(`cursor-app-control.rename_chat`, not in the CLI) and is not used.
+
+### Loop (`RECURRING_CAPABLE`): not joined
+
+`/loop 2m <task>` read `~/.cursor/skills-cursor/loop/SKILL.md` (a `preToolUse Read`) and proposed a
+Shell `while true; do sleep 120; echo 'AGENT_LOOP_TICK_<purpose> {...}'; done` (a `preToolUse
+Shell`), which stopped at the allowlist prompt and was declined. So the SETUP has a signal (the
+sentinel `AGENT_LOOP_TICK_` / `AGENT_LOOP_WAKE_` in a Shell command), but a tick, its turn shape
+and the loop's end were never measured. A card counting turns it never saw would be a guess.
+
+| Capability | Desktop | Server Edition | Mobile | SSH-remote node |
+|---|---|---|---|---|
+| Canvas control | yes | yes when its canvas control is enabled | N/A | same skill on the host via `installCanvasControl`; unverified for cursor |
+| Subagent cards + tail | yes | yes (same tracker, `src/server/agent-status.ts`) | N/A (cards are renderer-only) | none: no SSH hook installer (`LOCAL_ONLY_HOOK_AGENTS`) |
+| Rename push | yes | yes (same renderer path, `sendText` over the bridge) | N/A | `sendText` over the ControlMaster; title READ is local only, so the chip will not confirm |
+
+### Device checklist (not verified)
+
+1. Does the FIRST turn of a node launched as `cursor-agent agent '<prompt>'` carry `generation_id
+   !== conversation_id`? If it equals (like `sessionStart`), that turn's tool events and a `Task`
+   in it are dropped (badge still from `beforeSubmitPrompt`/`stop`).
+2. A backgrounded subagent (`SubagentRunState.backgrounded` exists in the bundle): its card ends at
+   the parent's `stop` while it still runs.
+3. Parallel Tasks in one turn (cards expected, no tail).
+4. Rename while a turn runs, and rename when the composer still holds text: in this capture the
+   composer KEPT a long prompt typed with `send-keys -l` after it was submitted, and the next typed
+   line was appended to it. Whether nodeterm's paste path leaves the composer empty is unmeasured
+   (the rename test cleared it first).
+5. Canvas control end to end in a real cursor node (`nodeterm.sh list` from the agent).
