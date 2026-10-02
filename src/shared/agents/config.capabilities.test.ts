@@ -33,7 +33,8 @@ import {
   hasHooksOverSsh,
   LOCAL_ONLY_HOOK_AGENTS,
   reportsSessionEnd,
-  resumeCommandWith
+  resumeCommandWith,
+  submitsSeparately
 } from './config'
 import { CURSOR_HOOK_EVENTS } from './hook-events'
 
@@ -416,7 +417,7 @@ describe('cursor capabilities', () => {
   })
 
   it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
-    for (const can of [canSubagent, canRecur, canBranch, canRename, canControlCanvas]) {
+    for (const can of [canRecur, canBranch]) {
       expect(can('cursor')).toBe(false)
     }
     expect(readsClaudeShapedTranscript('cursor')).toBe(false)
@@ -510,11 +511,34 @@ describe('cursor capabilities (transcript leaf)', () => {
   it('is local-only for the chat view: a remote node says "not supported yet"', () => {
     expect(chatReadsLocalOnly('cursor')).toBe(true)
   })
-  it('joins context link, transfer-from and the title READ leg, but not the rename WRITE leg', () => {
+  it('joins context link, transfer-from and the title READ leg', () => {
     expect(canContextLink('cursor')).toBe(true)
     expect(canTransferFrom('cursor')).toBe(true)
     expect(canReadTitle('cursor')).toBe(true)
-    expect(canRename('cursor')).toBe(false)
+  })
+})
+
+/**
+ * Cursor orchestration parity (docs/cursor-agent.md "Orchestration parity"), MEASURED on
+ * cursor-agent 2026.10.01 in the interactive TUI.
+ */
+describe('cursor capabilities (orchestration)', () => {
+  it('drives the canvas: ~/.claude/skills is listed by cursor, so membership is the whole wiring', () => {
+    expect(canControlCanvas('cursor')).toBe(true)
+  })
+  it('shows subagent cards (start: parent Task preToolUse, end: parent stop)', () => {
+    expect(canSubagent('cursor')).toBe(true)
+  })
+  it('renames: /rename lands in the store meta the READ leg reads, so read ⊇ write holds', () => {
+    expect(canRename('cursor')).toBe(true)
+    expect(canReadTitle('cursor')).toBe(true)
+  })
+  it('submits a one-way line with a SEPARATE Enter; claude and grok keep the one-shot paste', () => {
+    expect(submitsSeparately('cursor')).toBe(true)
+    for (const id of ['claude', 'grok', 'codex', 'gemini']) expect(submitsSeparately(id), id).toBe(false)
+  })
+  it('does NOT join RECURRING_CAPABLE: the loop skill was seen arming, its ticks were never measured', () => {
+    expect(canRecur('cursor')).toBe(false)
   })
 })
 

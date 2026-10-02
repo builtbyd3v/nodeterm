@@ -283,7 +283,10 @@ export const UNCONDITIONAL_SESSION_ID_CAPABLE = ['copilot', 'cursor'] as const
 // id from a type. It was assumed to key by `subagentType` (a type, so two children of one type
 // would collide); the payloads say otherwise, and `subagentId` is also the ONLY id the start and
 // the stop share — on the start `sessionId` is the PARENT's.
-export const SUBAGENT_CAPABLE = ['claude', 'codex', 'grok'] as const
+// cursor: its `subagentStart`/`subagentStop` hooks never fired (three measured runs, 2026.10.01),
+// so the start is the parent's `Task` preToolUse (keyed by `tool_use_id`) and the end is the
+// parent's `stop` (core/cursor-subagents.ts). docs/cursor-agent.md "Orchestration parity".
+export const SUBAGENT_CAPABLE = ['claude', 'codex', 'grok', 'cursor'] as const
 export const RECURRING_CAPABLE = ['claude'] as const // /loop, /schedule, /cron
 export const BRANCH_CAPABLE = ['claude'] as const
 // grok joins with NO installer of its own: it scans `~/.claude/skills` for Claude Code
@@ -404,7 +407,16 @@ export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'curs
 // without offering any way to rename it (gemini). Read legs are per-agent (claude: the transcript
 // .jsonl; grok: its session summary.json; gemini: its update_topic tool call), routed once in
 // core/agent-session-name.ts.
-export const RENAME_CAPABLE = ['claude', 'grok'] as const
+// cursor: `/rename <name>` is a local TUI command (`agentStore.setMetadata("name")`) that lands in
+// the store meta TITLE_READ_CAPABLE reads, MEASURED on 2026.10.01. It needs its Enter as a SEPARATE
+// write (SEPARATE_SUBMIT_AGENTS), or the line sits unsubmitted in the composer.
+export const RENAME_CAPABLE = ['claude', 'grok', 'cursor'] as const
+// Agents whose TUI ignores an Enter that arrives in the SAME write as a bracketed paste: the text
+// lands in the composer and is never submitted. MEASURED for cursor (2026.10.01): nodeterm's one-shot
+// paste+Enter left `/rename x` unsubmitted; the same paste followed by a bare Enter, as a second
+// tmux invocation, renamed the chat. `submitsSeparately` is asked by every one-way write that
+// expects the agent to act on its line (today: the session rename push).
+export const SEPARATE_SUBMIT_AGENTS = ['cursor'] as const
 // Agents whose OWN session name we can READ and adopt into the node title.
 //
 // Separate from RENAME_CAPABLE because the two directions are separate facts, and gemini has only
@@ -421,8 +433,8 @@ export const RENAME_CAPABLE = ['claude', 'grok'] as const
 // (SHARED_IDENTITY_CAPABLE below) a node owns a THREAD, and that thread carries a `Thread.name` we
 // can read over the server's own socket (core/codex-session-name.ts). There is still no measured
 // rename command, so it stays out of RENAME_CAPABLE — the read⊇write invariant holds either way.
-// cursor: READ only — its `name` (AI-generated, or `/rename`) is in the chat store; `/rename` is a TUI
-// command whose typed form was not measured, so it is NOT in RENAME_CAPABLE.
+// cursor: its `name` (AI-generated, or `/rename`) is in the chat store meta; the write leg joined
+// RENAME_CAPABLE once `/rename` was measured to land there.
 export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini', 'cursor'] as const
 // Agents whose canvas nodes share ONE managed CLI server per machine and keep a stable per-node
 // identity inside it, instead of each node owning a whole process tree.
@@ -447,7 +459,12 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // RemoteHooks.installCanvasControl. Membership here is what sets NODETERM_CANVAS_CONTROL in the
 // session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
 // other than a no-op.
-export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+//
+// cursor needs no installer either, by the same route: cursor-agent loads `~/.claude/skills` as
+// third-party skills (gated by its `thirdPartyExtensibility` setting, default on in the CLI), and
+// MEASURED on 2026.10.01 its interactive session listed `~/.claude/skills/manage-nodeterm-canvas`
+// right after its own built-ins, ahead of the tail it truncates when the skill list is long.
+export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'cursor'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
@@ -617,6 +634,7 @@ export const canTransferFrom = (id: AgentId): boolean => includes(TRANSFER_SOURC
  *  answer for codex and opencode is no, and callers must degrade rather than assume a crash. */
 export const reportsSessionEnd = (id: AgentId): boolean => includes(SESSION_END_CAPABLE, id)
 export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
+export const submitsSeparately = (id: AgentId): boolean => includes(SEPARATE_SUBMIT_AGENTS, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)

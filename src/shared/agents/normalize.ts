@@ -982,16 +982,35 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
 // `workspace_roots`, `user_email` and `transcript_path` (null until the first turn is written).
 // `cwd` exists on tool events only and was "" for Shell, so nothing here reads it.
 // `parent_tool_call_id` is the bundle's marker for a tool call made inside a subagent
-// (hooks_pb PreToolUseRequestQuery field 10; never seen on the wire, no subagent was run).
+// (hooks_pb PreToolUseRequestQuery field 10); never seen on the wire, see isCursorChildToolEvent.
 // `status` on `stop` is also from the bundle/docs, never captured: the capture runs were headless
 // and headless runs do not fire `stop` or `beforeSubmitPrompt` at all.
 interface CursorPayload {
   hook_event_name?: unknown
   conversation_id?: unknown
   session_id?: unknown
+  generation_id?: unknown
   parent_tool_call_id?: unknown
   status?: unknown
   is_background_agent?: unknown
+  tool_name?: unknown
+  tool_use_id?: unknown
+  tool_input?: unknown
+}
+
+/**
+ * A cursor tool event made INSIDE a subagent. MEASURED on 2026.10.01 (interactive TUI, three
+ * subagent runs, `__fixtures__/cursor/subagent-payloads.json`): a child's tool events carry the
+ * CHILD's own chat id as `conversation_id` AND as `generation_id`, and no `parent_tool_call_id`.
+ * A parent tool event carries its TURN's generation id, never the chat id (only `sessionStart`,
+ * which is no tool event, has the two equal). `parent_tool_call_id` stays as the bundle's marker.
+ * Wrong-guess cost: a parent tool event read as a child's is dropped; the badge still runs from
+ * `beforeSubmitPrompt` and `stop`.
+ */
+export function isCursorChildToolEvent(payload: unknown): boolean {
+  const p = (payload ?? {}) as CursorPayload
+  if (typeof p.parent_tool_call_id === 'string' && p.parent_tool_call_id) return true
+  return typeof p.conversation_id === 'string' && !!p.conversation_id && p.generation_id === p.conversation_id
 }
 
 /**
@@ -999,9 +1018,10 @@ interface CursorPayload {
  * including the ~16 events we do not subscribe, is null.
  *
  * - `beforeSubmitPrompt` → `working` + `newTurn` (`newTurn` retires `lastTurnError`, #521).
- * - `preToolUse` / `postToolUse` / `postToolUseFailure` → `working`. A tool call carrying
- *   `parent_tool_call_id` is a subagent's and returns null: its `conversation_id` may be the
- *   child's, and child activity must not drive the parent or replace its recorded session id.
+ * - `preToolUse` / `postToolUse` / `postToolUseFailure` → `working`. A subagent's tool call
+ *   (`isCursorChildToolEvent`) returns null: its `conversation_id` IS the child's (measured), and
+ *   child activity must not drive the parent or replace its recorded session id.
+ * - the parent's `preToolUse` for tool `Task` → `subagent-start`, keyed by `tool_use_id`.
  * - `stop` → `done`; `interrupted` only for status `aborted`, `errored` only for `error`. Any
  *   other status is a plain `done`, because `stop` ends the turn whatever it says.
  *
@@ -1026,7 +1046,21 @@ export function normalizeCursor(env: RawHookEnvelope): NormalizedAgentEvent | nu
 
   if (ev === 'beforeSubmitPrompt') return { ...base, kind: 'state', state: 'working', newTurn: true }
   if (ev === 'preToolUse' || ev === 'postToolUse' || ev === 'postToolUseFailure') {
-    if (typeof p.parent_tool_call_id === 'string' && p.parent_tool_call_id) return null
+    if (isCursorChildToolEvent(p)) return null
+    // The card's start. `subagentStart`/`subagentStop` never fired (three measured runs) and the
+    // parent's `Task` gets a preToolUse but NO postToolUse, so the end is the parent's `stop`,
+    // emitted by core/cursor-subagents.ts.
+    if (ev === 'preToolUse' && p.tool_name === 'Task' && typeof p.tool_use_id === 'string' && p.tool_use_id) {
+      const input = (p.tool_input ?? {}) as { subagent_type?: unknown; description?: unknown; prompt?: unknown }
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
+      return {
+        ...base,
+        kind: 'subagent-start',
+        toolUseId: p.tool_use_id,
+        subagentType: str(input.subagent_type),
+        taskLabel: str(input.description) ?? str(input.prompt)
+      }
+    }
     return { ...base, kind: 'state', state: 'working' }
   }
   if (ev === 'stop') {

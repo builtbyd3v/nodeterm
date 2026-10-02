@@ -122,7 +122,7 @@ describe('the stored-node dispatch cases (source pins)', () => {
   it('`rename` still mirrors the name into the live session either way', () => {
     // The `/rename` push goes through main to a tmux pane, so it works for an unmounted node too.
     // Losing it off canvas would leave the node renamed on the canvas and not in the session.
-    expect(caseBody('rename')).toContain('pushSessionRename(api.pty, id, title, prevTitle)')
+    expect(caseBody('rename')).toContain('pushSessionRename(api.pty, id, title, prevTitle, agentId)')
   })
 
   it('`board` and `assign` act on the CALLER’s project, not the active one', () => {
