@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { normalizeFor } from './normalize'
 import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
@@ -516,5 +517,24 @@ describe('cursor capabilities (transcript leaf)', () => {
     expect(canTransferFrom('cursor')).toBe(true)
     expect(canReadTitle('cursor')).toBe(true)
     expect(canRename('cursor')).toBe(false)
+  })
+})
+
+/**
+ * Cursor wave 2 (F2): NEEDS YOU from a pane read, the SSH hook installer, the lost-stop net.
+ * No capability list gates the approval watch: it is the hook server's own seam
+ * (core/agents/cursor-approval.ts) and only `agentId === 'cursor'` posts reach it.
+ */
+describe('cursor NEEDS YOU, SSH hooks and lost stop', () => {
+  it('is no longer local-only: RemoteHooks installs into the host ~/.cursor/hooks.json', () => {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).not.toContain('cursor')
+    expect(hasHooksOverSsh('cursor')).toBe(true)
+  })
+
+  it('the normalizer itself still never says blocked (the pane read adds it, not a hook)', () => {
+    for (const hook_event_name of ['preToolUse', 'beforeShellExecution', 'beforeMCPExecution', 'notification']) {
+      const ev = normalizeFor('cursor', { nodeId: 'n', agentId: 'cursor', payload: { hook_event_name, tool_use_id: 't' } })
+      expect(ev?.state === 'blocked', hook_event_name).toBe(false)
+    }
   })
 })

@@ -70,9 +70,10 @@ Traps found:
 | `stop` | `done`; `interrupted` if `status==="aborted"`, `errored` if `"error"` |
 | anything else | null |
 
-**No NEEDS YOU.** Measured: the `AskQuestion` tool ran in a headless turn (auto-skipped) and fired
-no `preToolUse`/`postToolUse`; Cursor's own approval prompt has no hook either. Guessing one would
-strobe (rule 7). A Cursor node shows RUNNING while it waits on a person.
+**No NEEDS YOU from the normalizer.** Measured: the `AskQuestion` tool fires no tool hook (headless
+and TUI); Cursor's own approval prompt has no hook either. Guessing one from events would strobe
+(rule 7). The approval prompt is detected from the pane instead: see "NEEDS YOU, SSH hooks and lost
+stop" below.
 
 ## 5. Cross-fire with nodeterm's claude hook (measured)
 
@@ -100,7 +101,7 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 
 - Desktop and Server Edition: both via `installManagedAgentHooks`; no raw-listener branch needed
   (state comes from the normalizer, like antigravity). Mobile: status mirror is agent-agnostic.
-- SSH: no remote installer, so `cursor` is in `LOCAL_ONLY_HOOK_AGENTS` (`--after` refuses it).
+- SSH: `RemoteHooks.installCursorRemote` (see "NEEDS YOU, SSH hooks and lost stop" below).
 - Not joined (each is its own leaf): `RESUMABLE_AGENTS` (id is recorded and `--resume <id>` is
   verified; the launch grammar with the `agent` subcommand is not), chat/transfer/context link
   (transcript shape is only seen as JSONL user/assistant/tool_use lines), usage meter (`stop`
@@ -116,7 +117,7 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 4. Subagent behaviour: is `parent_tool_call_id` set, which `conversation_id` do child events carry,
    does a child fire `stop`.
 5. Does an interactive exit fire `sessionEnd` (would allow `SESSION_END_CAPABLE`).
-6. Any hook for the approval prompt or a live `AskQuestion` (needed for NEEDS YOU).
+6. Answered: no hook for either (measured in the TUI); approval is read from the pane, AskQuestion is not covered.
 7. Hook latency inside a node (script backgrounds the POST; expected small).
 8. Linux and Windows: hooks.json location, `cursor-agent` install dir.
 
@@ -211,3 +212,68 @@ cards and `at` timestamps are not supported. `/rename` is not in `RENAME_CAPABLE
 2. A chat with a very long history (compaction) and one over 16 MiB.
 3. Title chip after cursor auto-names an interactive chat (print mode leaves `New Agent`).
 4. Server Edition on Linux and Windows path hashing of the cwd bucket (only the id scan is relied on).
+
+## NEEDS YOU, SSH hooks and lost stop
+
+Measured on `cursor-agent` 2026.09.28-64d2043, interactive TUI in a private tmux, project-level
+hooks logger, 4 model runs (composer-2.5).
+
+### NEEDS YOU (`core/agents/cursor-approval.ts`)
+
+| case | hook events | pane |
+|---|---|---|
+| shell off allowlist | `preToolUse` (Shell), `beforeShellExecution`, then silence | `Run this command?` / `Not in allowlist: touch` / `→ Run (once) (y)` ... `Skip & tell the agent what to do instead (esc or n)`; tool row `$ touch x Waiting for approval...` |
+| MCP tool | `preToolUse` (`MCP:ping`), `beforeMCPExecution`, then silence | `Run this MCP tool?` / `→ Run (once) (y)` ... `Skip (esc or n)` |
+| approve (y) or skip (n) | `postToolUse` for the same `tool_use_id` (skip too), then `stop` | dialog gone |
+| file write (default mode) | no dialog: auto-approved | n/a |
+| AskQuestion | NO tool hook at all; Esc fires only `stop` | `Clarifying Questions` box |
+
+Rule: a cursor `preToolUse` whose `tool_use_id` has no `postToolUse`/`postToolUseFailure` after
+1.5 s gets ONE pane read (`ptyManager.captureSession`, bounded by `probeWithin`). If the last 30
+non-blank lines hold an exact heading from the bundle's `decision-logic.ts` (`Run this command?`,
+`Run this command outside the sandbox?`, `Run this MCP tool?`, `Delete this file?`, `Write to this
+file?`, `Read this file?`, `Allow this web search?`, `Allow this web fetch?`) followed by an option
+ending in `(y)`, the hook server emits `blocked` on the same listener as every hook event. The next
+event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no timer, no read; one read
+per call, so a long approved command never strobes. `stop`/`beforeSubmitPrompt` drop the node's
+pending calls; subagent calls (`parent_tool_call_id`) are ignored.
+
+| Surface | Desktop | Server Edition | Mobile | SSH-remote node |
+|---|---|---|---|---|
+| NEEDS YOU on approval | yes (`hookServer.setPaneReader` in main) | yes (same call in server) | yes (mirror is agent-agnostic) | yes: `captureSession` reads the remote tmux over the ControlMaster (one ssh child per pending call) |
+| Kanban card, chips, card modal | `cardBadge` / `chatSendRefusal` read `blocked` for every agent | same | N/A | same |
+| Chat send / agent messaging refuse while blocked | `chatSendRefusal` = `dialog`; `decideDelivery` = `targetBusy` | same | same | same |
+
+Not covered: AskQuestion (no hook to hang a read on; the node shows RUNNING while it waits). The
+headings other than shell and MCP are bundle-read, not seen in a pane.
+
+### SSH hook installer (`RemoteHooks.installCursorRemote`)
+
+`cursor` left `LOCAL_ONLY_HOOK_AGENTS`, so `--after` accepts a cursor node on an SSH project. On
+connect, only where the host has `cursor-agent` (`command -v`, or `~/.local/bin/cursor-agent`, which a
+non-login ssh shell often lacks): write `~/.nodeterm/agent-hooks/cursor.sh` (stdin), then merge into
+the host's `~/.cursor/hooks.json` with the local installer's pure `applyCursorHooks` through
+`updateRemoteSettingsFile` (content over stdin, lock dir, other tools' entries kept, an unparseable
+file left byte-for-byte, a second run writes nothing). A command holding `//` is refused before
+anything runs. Tested under a real `/bin/sh` against a fake host tree
+(`remote-cursor-hooks.test.ts`). Removal on the host is not built (same as the other remote agents).
+
+### Lost stop
+
+A mid-turn network reconnect dropped `stop` (measured, wave 1). No new timer: the mirror's
+`sweepStaleWorking` (core) and the renderer's `sweepStaleWorking` both match `state === 'working'` for
+any agent, so a cursor node with a lost `stop` turns `done` after `WORKING_STALE_MS` (20 min) of
+silence (pinned in `cursor-approval.test.ts`). `blocked` is not swept, by design (a person may take
+long); its clearing event is the `postToolUse`/`stop` of the same turn.
+
+### Device checklist (not verified)
+
+1. A cursor node on the real canvas: NEEDS YOU badge, chime and phone card on the shell dialog;
+   back to RUNNING on y.
+2. Linux host over SSH: install lands, hooks fire through the tunnel, the remote pane read matches.
+3. `Run this command outside the sandbox?` (sandbox on) and the Write/Delete/Read/web dialogs:
+   heading text and a `(y)` option as rendered.
+4. A very long command preview pushing the heading above the 30-line window (would degrade to RUNNING).
+5. Two parallel tool calls with one approval: the other call's `postToolUse` returns the badge to
+   RUNNING while the dialog is still up (no re-read).
+

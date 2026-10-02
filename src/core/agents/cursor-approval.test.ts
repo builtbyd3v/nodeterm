@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCursorApprovalWatch, cursorApprovalIn, CURSOR_APPROVAL_DELAY_MS } from './cursor-approval'
 import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
-import { _resetForTest, mirrorEntry, recordAgentEvent } from '../agent-status-mirror'
+import { _resetForTest, mirrorEntry, recordAgentEvent, sweepStaleWorking } from '../agent-status-mirror'
+import { WORKING_STALE_MS } from '../../shared/agents/stale'
 import { decideDelivery } from './agent-message-decide'
 
 // Captured from cursor-agent 2026.09.28-64d2043 in tmux (capture-pane -p), blank lines dropped.
@@ -158,5 +159,13 @@ describe('a cursor blocked through the mirror and the messaging gate', () => {
     expect(o).toEqual({ kind: 'targetBusy', state: 'blocked' })
     recordAgentEvent({ ...base, state: 'working' }) // postToolUse after y / n
     expect(mirrorEntry('n9')?.state).toBe('working')
+  })
+
+  it('a lost stop (network reconnect) is caught by the existing WORKING_STALE_MS sweep', () => {
+    recordAgentEvent({ nodeId: 'n8', agentId: 'cursor', sessionId: 'c2', kind: 'state', state: 'working', newTurn: true })
+    const at = mirrorEntry('n8')!.updatedAt
+    expect(sweepStaleWorking(at + WORKING_STALE_MS)).toEqual([])
+    expect(sweepStaleWorking(at + WORKING_STALE_MS + 1)).toEqual(['n8'])
+    expect(mirrorEntry('n8')?.state).toBe('done')
   })
 })
