@@ -23,6 +23,7 @@ import {
   COPILOT_HOOK_FILE,
   isSafeRemoteCopilotHome
 } from '../../core/agents/hooks/copilot'
+import { applyCursorHooks, cursorCommandFor, CURSOR_SCRIPT_FILE } from '../../core/agents/hooks/cursor'
 
 /**
  * Remote hook scripts get NO Codex thread-identity root.
@@ -284,7 +285,9 @@ export class RemoteHooks {
         // grok: our own file in its hooks DIRECTORY, under the HOST's $GROK_HOME.
         this.installGrokRemote(conn, controlPath, home, remoteDir),
         // copilot: its own file/grammar under the HOST's $COPILOT_HOME hooks directory.
-        this.installCopilotRemote(conn, controlPath, home, remoteDir)
+        this.installCopilotRemote(conn, controlPath, home, remoteDir),
+        // cursor: merge into the host's SHARED ~/.cursor/hooks.json, only where cursor-agent exists.
+        this.installCursorRemote(conn, controlPath, home, remoteDir)
       ])
       for (const r of installs) {
         if (r.status === 'rejected') {
@@ -627,6 +630,44 @@ export class RemoteHooks {
       )
     } catch {
       /* fail-open: the remote copilot session simply runs without status hooks */
+    }
+  }
+
+  /**
+   * Install Cursor's status hook on the host: the same pure merge as the local installer
+   * (`applyCursorHooks`: other tools' entries survive, an unparseable file is left alone) through
+   * the locked stdin transaction (`updateRemoteSettingsFile`). Only where `cursor-agent` is on the
+   * host (PATH, or the vendor's `~/.local/bin`, which a non-login ssh shell often lacks): the file
+   * is shared with the Cursor IDE, so a host without the CLI gets nothing written. A command
+   * holding `//` is refused (cursor strips it as a JSONC comment and the whole file breaks).
+   * Fail-open.
+   */
+  private async installCursorRemote(
+    conn: SshConnection,
+    controlPath: string,
+    home: string,
+    remoteDir: string
+  ): Promise<void> {
+    try {
+      const script = `${remoteDir}/agent-hooks/${CURSOR_SCRIPT_FILE}`
+      const command = cursorCommandFor(script)
+      if (command.includes('//')) return
+      const probe = await this.r.run(childArgs(conn, controlPath,
+        `command -v cursor-agent >/dev/null 2>&1 || [ -x ${posixQuote(`${home}/.local/bin/cursor-agent`)} ]`))
+      if (probe.code !== 0) return
+      await this.r.run(
+        childArgs(
+          conn,
+          controlPath,
+          `mkdir -p ${posixQuote(`${remoteDir}/agent-hooks`)} && cat > ${posixQuote(script)} && chmod 755 ${posixQuote(script)}`
+        ),
+        buildManagedScript('cursor', REMOTE_IDENTITY_ROOT)
+      )
+      await updateRemoteSettingsFile(`${home}/.cursor/hooks.json`,
+        (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+        (cfg) => applyCursorHooks(cfg, command))
+    } catch {
+      /* fail-open: the remote cursor session simply runs without status hooks */
     }
   }
 

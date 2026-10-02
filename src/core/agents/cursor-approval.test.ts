@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCursorApprovalWatch, cursorApprovalIn, CURSOR_APPROVAL_DELAY_MS } from './cursor-approval'
 import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
+import { _resetForTest, mirrorEntry, recordAgentEvent } from '../agent-status-mirror'
+import { decideDelivery } from './agent-message-decide'
 
 // Captured from cursor-agent 2026.09.28-64d2043 in tmux (capture-pane -p), blank lines dropped.
 const SHELL = `  Run the shell command: touch approve-me.txt (use the shell tool, nothing else)
@@ -137,5 +139,24 @@ describe('createCursorApprovalWatch', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(readPane).toHaveBeenCalledTimes(1)
     expect(emitted).toEqual([])
+  })
+})
+
+describe('a cursor blocked through the mirror and the messaging gate', () => {
+  beforeEach(() => _resetForTest())
+  afterEach(() => _resetForTest())
+
+  it('holds blocked until the next hook event, and messaging refuses it meanwhile', () => {
+    const base = { nodeId: 'n9', agentId: 'cursor', sessionId: 'c1', kind: 'state' as const, verified: true }
+    recordAgentEvent({ ...base, state: 'working', newTurn: true })
+    recordAgentEvent({ ...base, state: 'working' }) // preToolUse
+    const out = recordAgentEvent({ ...base, state: 'blocked' }) // the watch's synthetic event
+    expect(out.state).toBe('blocked')
+    const entry = mirrorEntry('n9')
+    expect(entry?.state).toBe('blocked')
+    const o = decideDelivery({ targetLive: true, pane: 'agent', target: entry, tokenFilePresent: true, pasteAware: true })
+    expect(o).toEqual({ kind: 'targetBusy', state: 'blocked' })
+    recordAgentEvent({ ...base, state: 'working' }) // postToolUse after y / n
+    expect(mirrorEntry('n9')?.state).toBe('working')
   })
 })

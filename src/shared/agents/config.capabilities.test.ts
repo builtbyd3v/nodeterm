@@ -325,8 +325,8 @@ describe('antigravity capabilities', () => {
     // `--after` asks this before accepting a dependency in an SSH project: a node that can never
     // report "done" there would hold its dependant QUEUED forever.
     expect(hasHooksOverSsh('antigravity')).toBe(false)
-    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity', 'cursor'])
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity' && a !== 'cursor')) {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity'])
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity')) {
       expect(hasHooksOverSsh(id), id).toBe(hasHooks(id))
     }
   })
@@ -402,9 +402,9 @@ describe('antigravity capabilities', () => {
  * Everything else is a separate leaf that does not exist yet; docs/cursor-agent.md says which.
  */
 describe('cursor capabilities', () => {
-  it('reports status through its own hooks, on this machine only (no SSH installer yet)', () => {
+  it('reports status through its own hooks, locally and on an SSH host (RemoteHooks.installCursorRemote)', () => {
     expect(hasHooks('cursor')).toBe(true)
-    expect(hasHooksOverSsh('cursor')).toBe(false)
+    expect(hasHooksOverSsh('cursor')).toBe(true)
   })
 
   it('takes a permission mode and a model on its launch line', () => {
