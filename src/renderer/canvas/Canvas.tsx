@@ -8883,7 +8883,13 @@ export function Canvas() {
               : []
             const switchCapable = !!sourceAgentId && canSwitchModel(sourceAgentId)
             const compatibleModels = sourceAgentId && session.source !== 'relay'
-              ? modelsForAgent(gatewayModels, sourceAgentId, grokModelList(), cursorModelList())
+              ? modelsForAgent(
+                  gatewayModels,
+                  sourceAgentId,
+                  grokModelList(),
+                  // Only a cursor node may pay for it: an empty memo spawns `cursor-agent models`.
+                  capabilityAgentId(sourceAgentId) === 'cursor' ? cursorModelList() : []
+                )
               : []
             const currentModel =
               typeof n?.data.agentModel === 'string' ? n.data.agentModel : undefined

@@ -12,6 +12,7 @@ import {
   CODEX_SANDBOX_BLOCKED_LINE,
   CODEX_SANDBOX_RETRY_LINE
 } from '../core/agents/hook-sandbox-hint-sh'
+import { AGENT_CONFIG, MODEL_SWITCH_CAPABLE } from '../shared/agents/config'
 import { RETRYABLE } from '../core/agents/agent-message-decide'
 import { PROJECT_TARGETABLE_VERBS } from '../core/project-grants'
 import { DRY_RUN_VERBS } from '../shared/control-verbs'
@@ -484,6 +485,9 @@ describe('parseControlRequest', () => {
       expect(body.toLowerCase()).toContain('ignore')
       // Per-role model is what lets ONE spawn-team call mix tiers; the JSON example must show it.
       expect(body).toContain('"model"')
+      // The honoured-by list is MODEL_SWITCH_CAPABLE, by label (it once named three of five).
+      const honoured = /Honoured by ([^(]+)\(/.exec(body.replace(/\s+/g, ' '))?.[1] ?? ''
+      for (const id of MODEL_SWITCH_CAPABLE) expect(honoured, id).toContain(AGENT_CONFIG[id].label)
     }
   })
 

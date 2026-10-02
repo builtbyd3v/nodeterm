@@ -219,6 +219,11 @@ describe('buildContextLinkNote', () => {
     expect(msg).toContain('[nodeterm] You are now linked to "Builder"')
     expect(msg).toContain('get-linked-context skill')
   })
+  it('cursor (reads ~/.claude/skills) gets the skill wording; grok, unverified, keeps the CLI', () => {
+    expect(buildContextLinkNote('cursor', 'Builder', '/x/context.sh')).toContain('get-linked-context skill')
+    expect(buildNotePushMessage('N', 'x'.repeat(3000), 'cursor')).toContain('get-linked-context skill')
+    expect(buildContextLinkNote('grok', 'Builder', '/x/context.sh')).toContain('sh "/x/context.sh"')
+  })
   it('codex/gemini get the inline CLI command, single line', () => {
     const msg = buildContextLinkNote('codex', 'Builder', '/x/context.sh')
     expect(msg).toContain('sh "/x/context.sh"')

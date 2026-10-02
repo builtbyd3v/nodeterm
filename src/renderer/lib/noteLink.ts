@@ -3,6 +3,7 @@
 // message a note link injects into an agent session, and re-export the link-map builders.
 // Kept free of React/store imports so the connection matrix is unit-testable.
 import { oneLine } from '@shared/one-line'
+import { capabilityAgentId } from '@shared/agents/config'
 import {
   classifyLink,
   planBridges,
@@ -61,6 +62,15 @@ export function linkIdsCoveredByRopes(
   return links.filter((l) => pairs.has(pairKey(l.source, l.target))).map((l) => l.id)
 }
 
+/**
+ * Does this agent load nodeterm's `get-linked-context` skill from `~/.claude/skills`? claude, and
+ * cursor (measured: it lists that skill in its own `<agent_skills>`, docs/cursor-agent.md). grok
+ * reads that root too but its pickup of this skill is unverified, so it keeps the CLI wording.
+ */
+export function usesLinkedContextSkill(agentId: string | undefined): boolean {
+  return !agentId || agentId === 'claude' || capabilityAgentId(agentId) === 'cursor'
+}
+
 /** Longest note text pushed inline; longer notes are truncated with a pointer to the skill. */
 const NOTE_PUSH_MAX = 2000
 
@@ -78,7 +88,7 @@ export function buildNotePushMessage(title: string, text: string, agentId?: stri
   if (!text.trim()) return null
   const flat = oneLine(text.replace(/\s*\r?\n\s*/g, ' ⏎ '))
   const pointer =
-    !agentId || agentId === 'claude'
+    usesLinkedContextSkill(agentId)
       ? 'read the full note with the get-linked-context skill'
       : 'read the full note with the nodeterm linked-context CLI — see the get-linked-context section in your global agent instructions'
   const body =
@@ -106,7 +116,7 @@ export function buildContextLinkNote(
   // Both variants must self-defuse: the note is injected + submitted as a prompt, and an
   // agent that reads it as a task launches an unsolicited investigation of the linked node
   // (observed with gemini). "No action needed" keeps it a notification.
-  if (!agentId || agentId === 'claude') {
+  if (usesLinkedContextSkill(agentId)) {
     return `[nodeterm] You are now linked to "${other}". Use the get-linked-context skill to read its context when you need it. No action needed now — just acknowledge briefly.`
   }
   return `[nodeterm] You are now linked to "${other}". When you need its context (and only then) run: sh "${shimPath}" list — then summary | transcript | terminal --node <id>. Details are in the get-linked-context section of your global agent instructions. No action needed now — acknowledge briefly and do not run these commands yet.`
