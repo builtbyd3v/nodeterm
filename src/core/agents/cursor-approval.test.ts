@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createCursorApprovalWatch,
   cursorApprovalIn,
+  cursorPlanPromptIn,
   CURSOR_APPROVAL_DELAY_MS,
   CURSOR_APPROVAL_READS_MS
 } from './cursor-approval'
@@ -150,20 +151,133 @@ describe('createCursorApprovalWatch', () => {
     expect(emitted).toEqual([])
   })
 
-  it('ignores a captured child tool call (generation_id === conversation_id, no parent_tool_call_id)', async () => {
+  // A subagent's Shell dialog is drawn on the PARENT's pane (measured 2026.10.01, Task/explore
+  // child: conversation_id = generation_id = child id). It goes blocked under the PARENT's id.
+  it("a child tool call's dialog goes blocked with the PARENT session id, and its post clears it", async () => {
     const { readPane, emitted, post } = setup()
+    post('beforeSubmitPrompt') // the parent's own event: conversation_id c1
     post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([
+      { nodeId: 'n1', agentId: 'cursor', sessionId: 'c1', kind: 'state', state: 'blocked', verified: true }
+    ])
+    post('postToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    expect(emitted.map((e) => [e.state, e.sessionId])).toEqual([['blocked', 'c1'], ['working', 'c1']])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(emitted).toHaveLength(2) // one blocked per tool id, no strobe
+  })
+
+  it("the parent's Task call is not watched; one dialog seen by two calls is ONE blocked", async () => {
+    // Measured live (2026.10.01): with the Task call watched, its 4 s read caught the child's
+    // dialog and emitted blocked, then the child's own read emitted it again.
+    const { readPane, emitted, post } = setup()
+    post('beforeSubmitPrompt')
+    post('preToolUse', { tool_use_id: 'task1', tool_name: 'Task', generation_id: 'g1' })
     await vi.advanceTimersByTimeAsync(60_000)
     expect(readPane).not.toHaveBeenCalled()
+    post('preToolUse', { tool_use_id: 'p1', tool_name: 'Shell', generation_id: 'g1' })
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted.map((e) => e.state)).toEqual(['blocked'])
+    post('postToolUse', { tool_use_id: 'p1', generation_id: 'g1' }) // normalizes to working itself
+    post('preToolUse', { tool_use_id: 'p2', tool_name: 'Shell', generation_id: 'g1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted.map((e) => e.state)).toEqual(['blocked', 'blocked']) // a new dialog after working
+  })
+
+  it('a child call with no dialog emits nothing, and its post emits nothing either', async () => {
+    const { readPane, emitted, post } = setup(RUNNING)
+    post('beforeSubmitPrompt')
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    post('postToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
     expect(emitted).toEqual([])
   })
 
-  it('an unreadable pane and a subagent call degrade to nothing', async () => {
+  it('a child dialog before any parent event omits the session id rather than using the child id', async () => {
+    const { emitted, post } = setup()
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted).toHaveLength(1)
+    expect('sessionId' in emitted[0]).toBe(false)
+  })
+
+  it('an unreadable pane degrades to nothing, for a parent and a subagent call alike', async () => {
     const { readPane, emitted, post } = setup(null)
     post('preToolUse', { tool_use_id: 't1' })
     post('preToolUse', { tool_use_id: 't2', parent_tool_call_id: 'p' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length) // t1 only; t2 never read
+    expect(readPane).toHaveBeenCalledTimes(2 * CURSOR_APPROVAL_READS_MS.length)
+    expect(emitted).toEqual([])
+  })
+
+  // Plan mode's hand-off, captured on 2026.10.01-e373342 after a `--mode plan` turn whose `stop`
+  // carried status `completed`.
+  const PLAN = `  Ready to build?
+  → Yes, build locally (b)
+    No, propose changes (p or Esc)
+`
+  // Live capture (tmux, 2026.10.01): the prompt as drawn, and the same box after `b` and a build,
+  // which the build's own `stop` used to read as a fresh prompt.
+  const PLAN_BOX = ` │ Ready to build?                         │
+ │                                         │
+ │  → 1. Yes, build locally (b)            │
+ │    2. Yes, build in cloud (c)           │
+ │    3. No, propose changes (p or Esc)    │
+ │                                         │
+ └─────────────────────────────────────────┘
+`
+  const AFTER_BUILD = `${PLAN_BOX} ┌─────────────────────────────────────────┐
+ │ Building plan...                        │
+ └─────────────────────────────────────────┘
+    To-do All done
+    ✔ Create hello.txt with content: hi
+  Created hello.txt at the workspace root with the single word hi.
+  → Add a follow-up
+  Composer 2.5 · 11.8% · 1 file edited
+`
+  it('matches the measured plan prompt, and only it', () => {
+    expect(cursorPlanPromptIn(PLAN_BOX)).toBe(true)
+    expect(cursorPlanPromptIn(AFTER_BUILD)).toBe(false)
+    expect(cursorPlanPromptIn(PLAN)).toBe(true)
+    expect(cursorPlanPromptIn(' │ Ready to build? │\n │ → Yes, build locally (b) │\n')).toBe(true)
+    expect(cursorPlanPromptIn('  Ready to build?\n    No, propose changes (p or Esc)\n')).toBe(false)
+    expect(cursorPlanPromptIn(SHELL)).toBe(false)
+    expect(cursorApprovalIn(PLAN)).toBe(false)
+  })
+
+  it('a completed stop that ends on "Ready to build?" goes blocked once', async () => {
+    const { readPane, emitted, post } = setup(PLAN)
+    post('stop', { status: 'completed' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([
+      { nodeId: 'n1', agentId: 'cursor', sessionId: 'c1', kind: 'state', state: 'blocked', verified: true }
+    ])
+  })
+
+  it('no reads without a completed stop, and a new prompt or tool call cancels the plan watch', async () => {
+    const { readPane, post } = setup(PLAN)
+    post('stop', { status: 'aborted' })
+    post('stop', { status: 'error' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).not.toHaveBeenCalled()
+    post('stop', { status: 'completed' })
+    post('beforeSubmitPrompt')
+    post('stop', { status: 'completed' })
+    post('preToolUse', { tool_use_id: 't1' })
+    post('postToolUse', { tool_use_id: 't1' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).not.toHaveBeenCalled()
+  })
+
+  it('a completed stop on an ordinary pane reads a bounded number of times and stays done', async () => {
+    const { readPane, emitted, post } = setup(RUNNING)
+    post('stop', { status: 'completed' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
     expect(emitted).toEqual([])
   })
 })
