@@ -1,9 +1,11 @@
 # Cursor Agent CLI (`cursor-agent`) as a nodeterm agent
 
 Builtin id `cursor` (`AGENT_CONFIG.cursor`, launch `cursor-agent`, prompt behind the `agent`
-subcommand). This document covers the status-hook leaf: `cursor` is a member of
+subcommand). Sections 1 to 8 cover the status-hook leaf: `cursor` is a member of
 `AGENT_HOOK_TARGETS`, so a Cursor node gets the RUNNING badge, the unread dot, the completion
-notification, `--after` dependencies and trigger targets. Sibling write-ups:
+notification, `--after` dependencies and trigger targets. The later sections cover every capability
+it joined since (model and permission flags, chat, meter, session continuity, NEEDS YOU,
+orchestration). Sibling write-ups:
 `docs/antigravity-agent.md` (closest precedent), `docs/grok-agent.md`.
 
 **Where the facts come from.** Measured on `cursor-agent` 2026.09.28-64d2043 (macOS): five headless
@@ -27,8 +29,8 @@ create-chat` prints a new empty chat id. The transcript path is
 - Files read: `~/.cursor/hooks.json`, `<workspace>/.cursor/hooks.json`, enterprise/team files, and
   **`~/.claude/settings.json` (+ project `.claude/settings*.json`)** as Claude compat.
 - Shape: `{"version":1,"hooks":{"<camelCaseEvent>":[{"command":"...","timeout":5}]}}`, flat entries.
-- 21 events exist. We subscribe five (`CURSOR_HOOK_EVENTS`): `beforeSubmitPrompt`, `preToolUse`,
-  `postToolUse`, `postToolUseFailure`, `stop`.
+- 21 events exist. We subscribe six (`CURSOR_HOOK_EVENTS`): `beforeSubmitPrompt`, `preToolUse`,
+  `postToolUse`, `postToolUseFailure`, `stop`, `sessionEnd` (see "Session continuity").
 - Payload envelope (all events): `conversation_id`, `session_id`, `generation_id`, `model`,
   `hook_event_name`, `cursor_version`, `workspace_roots[]`, `user_email`, `transcript_path`. Tool
   events add `tool_name` (`Shell`, ...), `tool_input`, `tool_use_id`, `cwd` (was `""`), and
@@ -36,6 +38,11 @@ create-chat` prints a new empty chat id. The transcript path is
   `CURSOR_VERSION`, `CURSOR_TRANSCRIPT_PATH`, `CLAUDE_PROJECT_DIR`, and the parent's env
   (so `NODETERM_NODE_ID` reaches our script).
 - `sessionStart` fires once at startup, **not on `--resume`** (measured in the TUI and in the bundle).
+  Re-measured on 2026.10.01 (private tmux, project-level logger, no prompt): a plain `cursor-agent`
+  fires it within seconds, before any prompt, with `conversation_id` (== `generation_id`); a
+  `cursor-agent --resume <fresh uuid>` (how nodeterm launches EVERY node, minted id included) fired
+  nothing until `/quit` (`sessionEnd`), two runs. So it is not subscribed: it would not give a fresh
+  nodeterm node a status before its first turn (no DROPPED chip if it is killed before one).
 
 ## 3. Is the hook a gate? Yes, for some events; silence is the safe default
 
@@ -68,7 +75,12 @@ Traps found:
 | `beforeSubmitPrompt` | `working`, `newTurn` |
 | `preToolUse` / `postToolUse` / `postToolUseFailure` | `working`; null for a subagent's call (`isCursorChildToolEvent`); the parent's `Task` preToolUse is `subagent-start` (see "Orchestration parity") |
 | `stop` | `done`; `interrupted` if `status==="aborted"`, `errored` if `"error"` |
+| `sessionEnd` | session phase `end` (skipped when `is_background_agent`) |
 | anything else | null |
+
+The phone's activity line comes from the raw listener (`applyCursorRaw`): a parent `preToolUse` is
+recorded as claude's `PreToolUse` (tool name and input, so `Shell` reads "Running ..."), `stop` /
+`sessionEnd` as `Stop`; a child's tool event is skipped.
 
 **No NEEDS YOU from the normalizer.** Measured: the `AskQuestion` tool fires no tool hook (headless
 and TUI); Cursor's own approval prompt has no hook either. Guessing one from events would strobe
@@ -83,9 +95,12 @@ A file with only matcher-less entries is NOT treated as claude-format (Cursor's 
 needs one `matcher`), but this machine's `~/.claude/settings.json` has other tools' matcher entries,
 so nodeterm's `claude.sh` fires in every Cursor node here. **Inert:** `normalizeClaude` compares exact
 PascalCase names and returns null for every captured cursor payload (pinned in
-`normalize.cursor.test.ts`); the claude raw listener's only side effect is
-`nodeContextSession.set(node, session_id)`, which nothing reads for a non-claude session. Cost: two
-POSTs per event. Do not canonicalise claude's event-name compare.
+`normalize.cursor.test.ts`), and the claude raw listener returns before any association or tail write
+for a payload that `isCursorPayload` recognises (`cursor_version` or `conversation_id`; no Claude
+payload has either). It used to record `nodeContextSession.set(node, session_id)`, often a CHILD's
+id, so `pty:destroy` released the wrong session and the parent's cursor tail leaked (pinned in
+`src/server/agent-status.test.ts`). Cost: two POSTs per event. Do not canonicalise claude's
+event-name compare.
 
 ## 6. Installer (`core/agents/hooks/cursor.ts`)
 
@@ -99,8 +114,9 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 
 ## 7. Surfaces and what is not done
 
-- Desktop and Server Edition: both via `installManagedAgentHooks`; no raw-listener branch needed
-  (state comes from the normalizer, like antigravity). Mobile: status mirror is agent-agnostic.
+- Desktop and Server Edition: both via `installManagedAgentHooks`; state comes from the normalizer,
+  and both raw listeners call the one shared `applyCursorRaw` (meter, subagents, activity line).
+  Mobile: status mirror is agent-agnostic.
 - SSH: `RemoteHooks.installCursorRemote` (see "NEEDS YOU, SSH hooks and lost stop" below).
 - Windows: `installCursorHooks` writes nothing (`'refused'`). The command is POSIX sh, Windows
   hook execution is unmeasured, and a non-JSON byte on `preToolUse` denies the tool in every
@@ -112,12 +128,11 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 
 ## 8. Device checklist (unverified)
 
-1. Interactive TUI fires `beforeSubmitPrompt` and `stop` (headless never did). If not, the badge
-   still runs from tool events but text-only turns never show RUNNING.
+1. Answered: the interactive TUI fires `beforeSubmitPrompt` and `stop` (see "NEEDS YOU").
 2. `stop` payload: `status` values (`completed|aborted|error` assumed), and that Esc fires it.
 3. Bisect the 18-event stream failure (add events back one at a time in a headless run).
 4. ~~Subagent behaviour~~ measured on 2026.10.01, see "Orchestration parity".
-5. Does an interactive exit fire `sessionEnd` (would allow `SESSION_END_CAPABLE`).
+5. Answered: `/quit` fires `sessionEnd`; cursor is in `SESSION_END_CAPABLE` ("Session continuity").
 6. Answered: no hook for either (measured in the TUI); approval is read from the pane, AskQuestion is not covered.
 7. Hook latency inside a node (script backgrounds the POST; expected small).
 8. Linux and Windows: hooks.json location, `cursor-agent` install dir.
@@ -148,7 +163,7 @@ tests.
 | Plan | `--mode plan` | measured: a "create a file" prompt produced a written plan ("Ready to build?"), no file |
 | Bypass all | `--force` | measured: the shell command ran with no prompt, footer "Run Everything" |
 
-`auto` and `acceptEdits` show in `unsupportedModesNote`. `--sandbox` is a separate axis and is not
+Only `acceptEdits` shows in `unsupportedModesNote`. `--sandbox` is a separate axis and is not
 touched (cursor's sandbox is off by default, so the Bypass caveat does not claim one). `--mode ask`
 has no nodeterm mode.
 
@@ -161,10 +176,8 @@ none, transfer targets stay flat, the gateway default model is not applied).
 
 ### Model and permission: not verified / not built
 
-1. No model picker is reachable yet. The restart menu's "Switch model" needs a resumable agent with
-   a session id, and cursor is neither (`--resume [chatId]` and `create-chat` exist). The transfer
-   menu carries the gateway list only. When cursor joins `RESUMABLE_AGENTS`, add a `cursorModelsFrom`
-   parser plus a memoized probe beside `grokModelsFrom` and return it from `modelsForAgent`.
+1. Superseded: cursor is resumable now and the restart menu's "Switch model" lists
+   `cursor-agent models` (see "Session continuity", Models). The transfer menu stays flat.
 2. `--auto-review` measured on one safe command only (`touch` auto-ran); which calls its classifier still prompts for is Cursor's server-side policy and was not mapped.
 3. What cursor does with an unknown `--model` id is unmeasured.
 4. `--model` in the TUI adds the id to `modelParameters` / `modelSelectionHistory` in
@@ -279,7 +292,10 @@ DROPPED crash, without the subscription. Existing installs gain it on the next i
 
 **In-place restart.** `EXIT_SEQUENCES.cursor = '/quit'` (bare). Enter is a SEPARATE write (150 ms
 split, as opencode): text+Enter in one write is not submitted. Ctrl-U (`KILL_LINE`) clears a half-typed
-draft in the cursor TUI (measured). The restart rejects `working` (cursor has no blocked state, so an
+draft in the cursor TUI (measured). The `/quit` also waits `EXIT_KEY_GAP_MS` (150 ms) after the
+Ctrl-U: measured on 2026.10.01 in a private tmux, Ctrl-U+`/quit` in one burst then Enter 150 ms later
+left the CLI running 10 of 10 (the `/quit` was dropped, composer empty); Ctrl-U, 150 ms, `/quit`,
+150 ms, Enter returned to the shell 10 of 10. Applies to every `submitsSeparately` agent. The restart rejects `working` (cursor has no blocked state, so an
 approval prompt reads as working and is refused too).
 
 **Models.** `cursorModelsFrom` parses `cursor-agent models` (`<id> - <label>`, zero-width spaces
@@ -421,7 +437,9 @@ Trade-offs, stated: a HEADLESS (`-p`) run has `generation_id === conversation_id
 events (2026.09.28 capture), so they now read as a child's and drive nothing; headless runs fire no
 `beforeSubmitPrompt`/`stop` either, so those events only ever lit a RUNNING badge nothing cleared.
 Parallel Tasks get cards but no tail (ponytail: read the child meta's `toolCallId` to claim them). A
-lost `stop` (network reconnect) leaves the cards to the shared `WORKING_STALE_MS` decay. Not
+lost `stop` (network reconnect) leaves the cards to the shared `WORKING_STALE_MS` decay. A node
+closed or recycled mid-Task releases its entry and child tails (`tracker.release`, called from both
+shells' `releaseNodeTails`). Not
 subscribed: `subagentStart`/`subagentStop` (never fired; `subagentStart` is a GATING event, so a
 subscription is only risk).
 

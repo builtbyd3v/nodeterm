@@ -485,11 +485,10 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
 //
-// cursor joined with `manual`, `plan` and `bypassPermissions` only (see CURSOR_MODES in
-// approval-mode.ts). Its bare launch is `approvalMode: allowlist` (prompts for anything not on the
-// allowlist), so `auto` emits NO flag: the nearest flag, `--auto-review`, makes a server classifier
-// auto-run tool calls a bare session would prompt for, and `auto` is the DEFAULT mode, so it would
-// have widened every existing cursor node at upgrade.
+// cursor emits `--auto-review` for `auto` (a server classifier auto-runs safe calls, claude's `auto`
+// shape), `--mode plan` and `--force`; `manual` and `acceptEdits` emit no flag (its bare launch is
+// `approvalMode: allowlist`). See CURSOR_MODES in approval-mode.ts. `auto` is the DEFAULT mode, which
+// widened no existing node only because cursor shipped in the same change.
 export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'cursor'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
