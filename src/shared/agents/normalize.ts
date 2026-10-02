@@ -1007,8 +1007,9 @@ interface CursorPayload {
  *
  * - `sessionEnd` → `session` phase `end` (SESSION_END_CAPABLE), unless `is_background_agent`.
  *
- * NEEDS YOU is deliberately absent: the AskQuestion tool fires no tool hook and Cursor's own
- * approval prompt has none either (docs/cursor-agent.md §4). Guessing one would strobe.
+ * NEEDS YOU is deliberately absent HERE: the AskQuestion tool fires no tool hook and Cursor's own
+ * approval prompt has none either (docs/cursor-agent.md §4). The hook server adds a `blocked` from
+ * one pane read of a still-pending tool call instead (core/agents/cursor-approval.ts).
  *
  * `sessionId` is `conversation_id`, falling back to `session_id`: the resume feature keys on it.
  */

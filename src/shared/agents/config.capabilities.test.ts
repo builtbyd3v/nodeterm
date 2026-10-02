@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { normalizeFor } from './normalize'
 import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
@@ -327,8 +328,8 @@ describe('antigravity capabilities', () => {
     // `--after` asks this before accepting a dependency in an SSH project: a node that can never
     // report "done" there would hold its dependant QUEUED forever.
     expect(hasHooksOverSsh('antigravity')).toBe(false)
-    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity', 'cursor'])
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity' && a !== 'cursor')) {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity'])
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity')) {
       expect(hasHooksOverSsh(id), id).toBe(hasHooks(id))
     }
   })
@@ -404,9 +405,9 @@ describe('antigravity capabilities', () => {
  * Everything else is a separate leaf that does not exist yet; docs/cursor-agent.md says which.
  */
 describe('cursor capabilities', () => {
-  it('reports status through its own hooks, on this machine only (no SSH installer yet)', () => {
+  it('reports status through its own hooks, locally and on an SSH host (RemoteHooks.installCursorRemote)', () => {
     expect(hasHooks('cursor')).toBe(true)
-    expect(hasHooksOverSsh('cursor')).toBe(false)
+    expect(hasHooksOverSsh('cursor')).toBe(true)
   })
 
   it('takes a permission mode and a model on its launch line', () => {
@@ -542,5 +543,24 @@ describe('cursor capabilities (session continuity)', () => {
   it('reports a session end (normalizeCursor maps sessionEnd, CURSOR_HOOK_EVENTS subscribes it)', () => {
     expect(reportsSessionEnd('cursor')).toBe(true)
     expect(CURSOR_HOOK_EVENTS).toContain('sessionEnd')
+  })
+})
+
+/**
+ * Cursor wave 2 (F2): NEEDS YOU from a pane read, the SSH hook installer, the lost-stop net.
+ * No capability list gates the approval watch: it is the hook server's own seam
+ * (core/agents/cursor-approval.ts) and only `agentId === 'cursor'` posts reach it.
+ */
+describe('cursor NEEDS YOU, SSH hooks and lost stop', () => {
+  it('is no longer local-only: RemoteHooks installs into the host ~/.cursor/hooks.json', () => {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).not.toContain('cursor')
+    expect(hasHooksOverSsh('cursor')).toBe(true)
+  })
+
+  it('the normalizer itself still never says blocked (the pane read adds it, not a hook)', () => {
+    for (const hook_event_name of ['preToolUse', 'beforeShellExecution', 'beforeMCPExecution', 'notification']) {
+      const ev = normalizeFor('cursor', { nodeId: 'n', agentId: 'cursor', payload: { hook_event_name, tool_use_id: 't' } })
+      expect(ev?.state === 'blocked', hook_event_name).toBe(false)
+    }
   })
 })

@@ -575,7 +575,7 @@ export const hasHooks = (id: AgentId): boolean => includes(AGENT_HOOK_TARGETS, i
  * has no installer for them on an SSH host yet. On an SSH project such a node never reports a
  * state, so nothing may WAIT on it (`--after`): the dependant would sit QUEUED forever.
  */
-export const LOCAL_ONLY_HOOK_AGENTS = ['antigravity', 'cursor'] as const
+export const LOCAL_ONLY_HOOK_AGENTS = ['antigravity'] as const
 /** Does this agent report status when its node runs on an SSH project's host? */
 export const hasHooksOverSsh = (id: AgentId): boolean =>
   hasHooks(id) && !includes(LOCAL_ONLY_HOOK_AGENTS, id)
