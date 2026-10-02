@@ -111,6 +111,13 @@ export function ensureCursorCliCaps(): Promise<CursorCliCaps> {
       .then(() => window.nodeTerminal.cursor.cliCaps())
       .then((c) => (cursorCaps = c ?? UNKNOWN_CURSOR_CLI_CAPS))
       .catch(() => UNKNOWN_CURSOR_CLI_CAPS)
+      .then((c) => {
+        // An empty catalogue (offline, signed out, CLI missing) is not remembered: core does not
+        // cache it either (core/cursor-cli.ts), so the next ask retries instead of hiding the model
+        // menu until an app reload (review 2026-10-02). A real catalogue stays memoized.
+        if (c.models.length === 0) cursorCapsPromise = null
+        return c
+      })
     const timeout = new Promise<CursorCliCaps>((resolve) =>
       setTimeout(() => resolve(cursorCaps), CAPS_WAIT_MS)
     )
@@ -119,9 +126,17 @@ export function ensureCursorCliCaps(): Promise<CursorCliCaps> {
   return cursorCapsPromise
 }
 
-/** Last-known cursor caps, synchronously. */
+/** Last-known cursor caps, synchronously. With nothing known yet it starts a retry in the
+ *  background, so the menu that asked finds the catalogue the next time it opens. */
 export function cursorCliCapsNow(): CursorCliCaps {
+  if (cursorCaps.models.length === 0) void ensureCursorCliCaps()
   return cursorCaps
+}
+
+/** Test seam for the cursor memo. */
+export function resetCursorCliCapsForTests(): void {
+  cursorCaps = UNKNOWN_CURSOR_CLI_CAPS
+  cursorCapsPromise = null
 }
 
 /** Test seam for the grok memo. */

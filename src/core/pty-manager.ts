@@ -112,6 +112,7 @@ import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
 import {
   capabilityAgentId,
+  submitsSeparately,
   hasSharedIdentity,
   setCustomAgentBaseResolver,
   vanillaEnvStripPattern,
@@ -863,8 +864,15 @@ export const BACKGROUND_WRITE_LINGER_MS = 10_000
  * survives, so reopening the node or restarting the app reattaches and continues
  * where it left off. Without tmux, it falls back to a plain shell (no persistence).
  */
+/** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
+ *  measured shape: paste, then Enter as its own tmux invocation). */
+const SEPARATE_SUBMIT_DELAY_MS = 150
+
 export class PtyManager {
   private sessions = new Map<string, Session>()
+  /** persistKey -> the agent id its pane was created for (this app run). `sendText` asks it so an
+   *  agent in SEPARATE_SUBMIT_AGENTS gets its Enter as a second write (see `sendText`). */
+  private agentByKey = new Map<string, string>()
   /** persistKey (node id) → live sessionId. The index that makes `pty:create` idempotent:
    *  a second client asking for the same node subscribes to the running session. */
   private byPersistKey = new Map<string, string>()
@@ -2065,6 +2073,7 @@ export class PtyManager {
   private async create(clientId: ClientId, options: PtyCreateOptions): Promise<PtyCreateResult> {
     const key = options.persistKey
     if (!key) return this.spawnNew(clientId, options)
+    if (options.agentId) this.agentByKey.set(key, options.agentId)
     // SECURITY — the choke point for the node id. Every session spawn (local tmux, plain shell,
     // SSH remote) goes through here, `pty:create` validates its payload nowhere, and node ids come
     // from `.nodeterm/project.json` — a file that travels in a cloned/shared repo and is written on
@@ -4468,8 +4477,38 @@ export class PtyManager {
    */
   async sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult> {
     const enter = opts?.enter ?? true
-    const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
+    // An agent whose TUI ignores an Enter bundled into the same tmux invocation as a bracketed paste
+    // (SEPARATE_SUBMIT_AGENTS, cursor: MEASURED, the line sits unsubmitted in its composer) gets the
+    // paste and then a bare Enter as a second write. ONE place for every one-way writer: the chat
+    // composer, the phone, canvas `write`, trigger delivery and rename all reach here (review
+    // 2026-10-02 found only rename split it). Windows panes and the session host already submit
+    // with a separate, settled Enter, so they are left alone.
+    const agent = this.agentByKey.get(persistKey)
+    if (
+      enter &&
+      text &&
+      agent &&
+      !live?.nativeWindowsPane &&
+      !live?.sessionHost &&
+      submitsSeparately(capabilityAgentId(agent as AgentId))
+    ) {
+      const pasted = await this.deliverText(persistKey, text, false, live)
+      if (pasted !== true) return pasted
+      await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
+      const entered = await this.deliverText(persistKey, '', true, live)
+      return entered === true ? true : 'pasted-not-submitted'
+    }
+    return this.deliverText(persistKey, text, enter, live)
+  }
+
+  private async deliverText(
+    persistKey: string,
+    text: string,
+    enter: boolean,
+    live: ReturnType<PtyManager['liveSessionForPersistKey']>
+  ): Promise<TextDeliveryResult> {
+    const target = sessionName(persistKey)
     // A direct (non-persistent) Windows PTY has no session-host entry and no tmux: it is typed
     // into through the pane itself. Routing it to the session host below failed every time.
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendText(text, enter)

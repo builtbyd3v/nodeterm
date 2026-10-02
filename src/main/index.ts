@@ -216,7 +216,7 @@ import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
-import { cursorContextParse, readCursorContextSource, trackCursorContext } from '../core/cursor-chat'
+import { applyCursorRaw, cursorContextParse, readCursorContextSource } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
@@ -3083,15 +3083,18 @@ app.whenReady().then(async () => {
   // Hook server validates session-env capacity and caller identity once for both shells.
   hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
     if (agentId === 'cursor') {
-      // A remote (SSH) cursor node: "not yet". Its chat is on the host and there is no remote leg, so
-      // it is never metered from this machine's disk (no cursor SSH hooks reach here today anyway).
-      if (nodeId && (ptyManager.sshRemoteForNode(nodeId) || workspaceStore.sshProjectIdForNode(nodeId))) return
-      // The store is found by the event's conversation_id alone (`trackCursorContext`); the payload's
-      // transcript_path is the redacted agent-transcripts jsonl and is never read, so no jail applies.
-      // A cursor subagent's own events (parent_tool_call_id) carry the parent's id, so they re-track nothing.
-      void trackCursorContext(cursorContextTail, payload).then((id) => {
-        if (nodeId && id) nodeContextSession.set(nodeId, id)
-      })
+      // One shared step (core/cursor-chat.ts `applyCursorRaw`): subagent cards, the meter, and the
+      // child-event guard. A remote node gets cards but no meter (its chat is on the host).
+      applyCursorRaw(
+        {
+          tail: cursorContextTail,
+          subagents: cursorSubagents,
+          nodeSession: nodeContextSession,
+          isRemote: (id) => !!(ptyManager.sshRemoteForNode(id) || workspaceStore.sshProjectIdForNode(id))
+        },
+        nodeId,
+        payload
+      )
       return
     }
     if (agentId === 'grok') {
@@ -3191,10 +3194,6 @@ app.whenReady().then(async () => {
       // substitutes for the other: `applyGrokHookSession` did the first (and does it for PostCompact
       // too, which this call site cannot see). The tail is this shell's, so it is released here.
       if (plan.forgetSessionId) grokContextTail.untrack(plan.forgetSessionId)
-      return
-    }
-    if (agentId === 'cursor') {
-      cursorSubagents.onRaw(agentId, nodeId, payload)
       return
     }
     // gemini and codex both carry `transcript_path` in their hook envelope (gemini: the base input

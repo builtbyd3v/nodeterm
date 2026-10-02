@@ -19,10 +19,16 @@ beforeEach(() => {
 })
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 
-const install = (extra = {}) => installCursorHooks({ hooksJson, scriptPath: script, findCursorAgent: found, ...extra })
+const install = (extra = {}) => installCursorHooks({ hooksJson, scriptPath: script, findCursorAgent: found, platform: 'linux', ...extra })
 const ours = (entries: { command?: string }[]) => entries.filter((e) => e.command?.includes('.nodeterm/agent-hooks/cursor.sh'))
 
 describe('installCursorHooks', () => {
+  it('writes nothing on Windows: the command is POSIX sh and a bad byte denies every tool', () => {
+    expect(install({ platform: 'win32' })).toBe('refused')
+    expect(fs.existsSync(hooksJson)).toBe(false)
+    expect(fs.existsSync(script)).toBe(false)
+  })
+
   it('creates a version-1 file with one entry of ours on each of the five events, and the script', () => {
     expect(install()).toBe('installed')
     const cfg = read()

@@ -25,7 +25,7 @@
  * NOT covered: the AskQuestion form ("Clarifying Questions"). Measured: it fires no tool hook at
  * all (no preToolUse, only `stop` on Esc), so there is no pending call to hang a read on.
  */
-import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
+import { isCursorChildToolEvent, type NormalizedAgentEvent } from '../../shared/agents/normalize'
 import { probeWithin } from './pane-probe'
 
 /**
@@ -132,8 +132,10 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
   return {
     observe(nodeId, payload, verified) {
       const ev = payload.hook_event_name
-      // A subagent's call is ignored, like normalizeCursor ignores it.
-      if (str(payload.parent_tool_call_id)) return
+      // A subagent's call is ignored, like normalizeCursor ignores it: the SAME predicate, because
+      // captured children carry no parent_tool_call_id, only generation_id === conversation_id. A
+      // child id on a synthetic `blocked` would overwrite the parent's resume id (review 2026-10-02).
+      if (isCursorChildToolEvent(payload)) return
       const id = str(payload.tool_use_id)
       if (ev === 'preToolUse' && id) {
         drop(nodeId, id)

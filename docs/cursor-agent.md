@@ -101,16 +101,14 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 
 - Desktop and Server Edition: both via `installManagedAgentHooks`; no raw-listener branch needed
   (state comes from the normalizer, like antigravity). Mobile: status mirror is agent-agnostic.
-- SSH: no remote installer, so `cursor` is in `LOCAL_ONLY_HOOK_AGENTS` (`--after` refuses it).
-- Not joined (each is its own leaf; resume/mint/session end/model list are now in
-  "Session continuity" below): chat/transfer/context link
-
 - SSH: `RemoteHooks.installCursorRemote` (see "NEEDS YOU, SSH hooks and lost stop" below).
-- Not joined (each is its own leaf): `RESUMABLE_AGENTS` (id is recorded and `--resume <id>` is
-  verified; the launch grammar with the `agent` subcommand is not), chat/transfer/context link
-  (transcript shape is only seen as JSONL user/assistant/tool_use lines), usage meter (`stop`
-  carries token counts, window unmeasured), permission modes, model switch, `SESSION_END_CAPABLE`.
-  (Canvas control, rename and subagents joined later: "Orchestration parity" below.)
+- Windows: `installCursorHooks` writes nothing (`'refused'`). The command is POSIX sh, Windows
+  hook execution is unmeasured, and a non-JSON byte on `preToolUse` denies the tool in every
+  cursor session on the machine. The remote installer only targets POSIX hosts.
+- Joined since this section was first written: resume, mint, session end and the model list
+  ("Session continuity"), chat/transfer/context link and the meter, canvas control, rename and
+  subagents ("Orchestration parity"). Not joined: recurring (`/loop`), branch (claude-only),
+  plan-limits usage.
 
 ## 8. Device checklist (unverified)
 
@@ -298,8 +296,8 @@ id instead of failing like claude. The only loss is the "lost session" notice.
 
 | Capability | Desktop | Server Edition | Mobile | SSH-remote node |
 |---|---|---|---|---|
-| Resume / cold restore / restart / mint | yes | yes (core + shared composer) | N/A | `cursor` has no remote installer (`LOCAL_ONLY_HOOK_AGENTS`); no hook id, mint still gives one, remote run unverified |
-| Session end (DROPPED chip) | yes | yes (normalizer is shared) | status mirror | no hooks over SSH, so no chip |
+| Resume / cold restore / restart / mint | yes | yes (core + shared composer) | N/A | hooks via `installCursorRemote` give the id; mint also gives one; remote run unverified |
+| Session end (DROPPED chip) | yes | yes (normalizer is shared) | status mirror | hooks via `installCursorRemote`; remote `sessionEnd` unverified |
 | Model catalogue | yes (IPC) | yes (WS-RPC handler) | N/A | lists THIS machine's account |
 
 ### Not verified (device checklist)
@@ -327,14 +325,16 @@ hooks logger, 4 model runs (composer-2.5).
 | AskQuestion | NO tool hook at all; Esc fires only `stop` | `Clarifying Questions` box |
 
 Rule: a cursor `preToolUse` whose `tool_use_id` has no `postToolUse`/`postToolUseFailure` after
-1.5 s gets ONE pane read (`ptyManager.captureSession`, bounded by `probeWithin`). If the last 30
+1.5 s gets a pane read (`ptyManager.captureSession`, bounded by `probeWithin`), retried at 4 s and
+10 s (`CURSOR_APPROVAL_READS_MS`) because the dev app's first read once ran before the dialog drew. If the last 30
 non-blank lines hold an exact heading from the bundle's `decision-logic.ts` (`Run this command?`,
 `Run this command outside the sandbox?`, `Run this MCP tool?`, `Delete this file?`, `Write to this
 file?`, `Read this file?`, `Allow this web search?`, `Allow this web fetch?`) followed by an option
 ending in `(y)`, the hook server emits `blocked` on the same listener as every hook event. The next
-event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no timer, no read; one read
-per call, so a long approved command never strobes. `stop`/`beforeSubmitPrompt` drop the node's
-pending calls; subagent calls (`parent_tool_call_id`) are ignored.
+event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no timer, no read; at most three reads
+per call and one `blocked` emit, so a long approved command never strobes. `stop`/`beforeSubmitPrompt`
+drop the node's pending calls; subagent calls (`isCursorChildToolEvent`: `generation_id ===
+conversation_id`) are ignored.
 
 | Surface | Desktop | Server Edition | Mobile | SSH-remote node |
 |---|---|---|---|---|
@@ -447,7 +447,7 @@ and the loop's end were never measured. A card counting turns it never saw would
 | Capability | Desktop | Server Edition | Mobile | SSH-remote node |
 |---|---|---|---|---|
 | Canvas control | yes | yes when its canvas control is enabled | N/A | same skill on the host via `installCanvasControl`; unverified for cursor |
-| Subagent cards + tail | yes | yes (same tracker, `src/server/agent-status.ts`) | N/A (cards are renderer-only) | none: no SSH hook installer (`LOCAL_ONLY_HOOK_AGENTS`) |
+| Subagent cards + tail | yes | yes (same tracker, `src/server/agent-status.ts`) | N/A (cards are renderer-only) | cards from `installCursorRemote` hooks; no live tail (child store is on the host) |
 | Rename push | yes | yes (same renderer path, `sendText` over the bridge) | N/A | `sendText` over the ControlMaster; title READ is local only, so the chip will not confirm |
 
 ### Device checklist (not verified)

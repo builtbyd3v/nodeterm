@@ -34,6 +34,7 @@ import { CHAT_TOOL_ARG_MAX } from '../shared/chat-command'
 import { CHAT_PAGE_MAX_BYTES, type ChatTranscriptPage } from '../shared/chat-page'
 import { metaString, summarizeResult } from './transcript-reader'
 import { opencodePageMessages } from './opencode-chat'
+import { isCursorChildToolEvent } from '../shared/agents/normalize'
 
 type ToolPart = Extract<ChatPart, { kind: 'tool' }>
 type Obj = Record<string, unknown>
@@ -504,4 +505,44 @@ export async function trackCursorContext(
   const path = await locateCursorChat(id, cwd)
   if (path) tail.track(id, path)
   return id
+}
+
+/**
+ * The ONE cursor step both shells' raw hook listeners run (`src/main/index.ts`,
+ * `src/server/agent-status.ts`), so the two cannot drift (CLAUDE.md rules 10 and 11). It used to be
+ * written inline in each shell as two `agentId === 'cursor'` branches, and the first one returned,
+ * so the second (the subagent tracker) never ran in either shell: a subagent card started from the
+ * normalizer but never ended (review 2026-10-02).
+ *
+ * Order matters:
+ * 1. The subagent tracker sees EVERY event, child ones included (they feed its live tail) and remote
+ *    ones (its end emit reads no local file).
+ * 2. A remote node is not metered from this machine's disk.
+ * 3. A child's tool event (`isCursorChildToolEvent`: generation_id === conversation_id) never
+ *    re-points the node at the child's chat once the node has a session of its own. Before this it
+ *    replaced the node's session id (the resume id) and leaked a 1 Hz tail on the child store.
+ *    A node with no session yet still tracks it, so a headless run whose own tool events look like
+ *    a child's keeps its meter.
+ */
+export function applyCursorRaw(
+  deps: {
+    tail: { track(id: string, path: string): void; pathFor(id: string): string | undefined }
+    subagents: { onRaw(agentId: 'cursor', nodeId: string | undefined, payload: unknown): void }
+    nodeSession: Map<string, string>
+    isRemote: (nodeId: string) => boolean
+  },
+  nodeId: string | undefined,
+  payload: unknown
+): void {
+  deps.subagents.onRaw('cursor', nodeId, payload)
+  if (!nodeId || deps.isRemote(nodeId)) return
+  const current = deps.nodeSession.get(nodeId)
+  if (current && isCursorChildToolEvent(payload)) return
+  void trackCursorContext(deps.tail, payload).then((id) => {
+    if (!id) return
+    // A slower scan for an older event must not overwrite a newer association.
+    const now = deps.nodeSession.get(nodeId)
+    if (now && now !== id && isCursorChildToolEvent(payload)) return
+    deps.nodeSession.set(nodeId, id)
+  })
 }

@@ -20,7 +20,7 @@ import { createContextTail, type ContextTail, type TaskNotification } from '../c
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
-import { cursorContextParse, readCursorContextSource, trackCursorContext } from '../core/cursor-chat'
+import { applyCursorRaw, cursorContextParse, readCursorContextSource } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
@@ -207,12 +207,13 @@ export function wireAgentStatus(
   // Hook server validates session-env capacity and caller identity once for both shells.
   hooks.setRawListener((agentId, nodeId, payload, _meta) => {
     if (agentId === 'cursor') {
-      // The store is found by the event's conversation_id alone (`trackCursorContext`); the payload's
-      // transcript_path is the redacted agent-transcripts jsonl and is never read, so no jail applies.
-      // A cursor subagent's own events (parent_tool_call_id) carry the parent's id, so they re-track nothing.
-      void trackCursorContext(cursorContextTail, payload).then((id) => {
-        if (nodeId && id) nodeContextSession.set(nodeId, id)
-      })
+      // Same shared step as the desktop (core/cursor-chat.ts `applyCursorRaw`). The server has no
+      // SSH projects, so nothing here is remote.
+      applyCursorRaw(
+        { tail: cursorContextTail, subagents: cursorSubagents, nodeSession: nodeContextSession, isRemote: () => false },
+        nodeId,
+        payload
+      )
       return
     }
     if (agentId === 'grok') {
@@ -312,10 +313,6 @@ export function wireAgentStatus(
       // substitutes for the other: `applyGrokHookSession` did the first (and does it for PostCompact
       // too, which this call site cannot see). The tail is this shell's, so it is released here.
       if (plan.forgetSessionId) grokContextTail.untrack(plan.forgetSessionId)
-      return
-    }
-    if (agentId === 'cursor') {
-      cursorSubagents.onRaw(agentId, nodeId, payload)
       return
     }
     // gemini and codex both carry `transcript_path` in their hook envelope (gemini: the base input

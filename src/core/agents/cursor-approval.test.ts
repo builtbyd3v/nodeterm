@@ -150,6 +150,14 @@ describe('createCursorApprovalWatch', () => {
     expect(emitted).toEqual([])
   })
 
+  it('ignores a captured child tool call (generation_id === conversation_id, no parent_tool_call_id)', async () => {
+    const { readPane, emitted, post } = setup()
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).not.toHaveBeenCalled()
+    expect(emitted).toEqual([])
+  })
+
   it('an unreadable pane and a subagent call degrade to nothing', async () => {
     const { readPane, emitted, post } = setup(null)
     post('preToolUse', { tool_use_id: 't1' })

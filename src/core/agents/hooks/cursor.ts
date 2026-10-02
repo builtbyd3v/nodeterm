@@ -92,11 +92,20 @@ export interface CursorInstallOptions {
   /** Is `cursor-agent` installed? Defaults to a file lookup (never a spawn). */
   findCursorAgent?: () => string | null
   writeScript?: boolean
+  /** Defaults to `process.platform`. Tests pass `'win32'`. */
+  platform?: NodeJS.Platform
 }
 
 export type CursorInstallOutcome = 'installed' | 'no-cursor' | 'refused'
 
 export function installCursorHooks(opts: CursorInstallOptions = {}): CursorInstallOutcome {
+  // The command is POSIX sh. Windows hook execution is unmeasured, and a non-JSON byte on
+  // preToolUse denies the tool in every cursor session on the machine, so write nothing there
+  // (antigravity's rule: refuse rather than write a command cmd.exe may misread).
+  if ((opts.platform ?? process.platform) === 'win32') {
+    console.warn('[agent-hooks] cursor install skipped: no measured Windows hook command yet')
+    return 'refused'
+  }
   const hooksJson = opts.hooksJson ?? cursorHooksJsonPath()
   const script = opts.scriptPath ?? cursorScriptPath()
   // Only where the CLI exists: the file is shared with the IDE and other tools.
