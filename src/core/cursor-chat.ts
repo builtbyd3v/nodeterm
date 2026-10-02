@@ -267,9 +267,12 @@ export async function locateCursorChat(chatId: string | undefined, cwd?: string)
 export const CURSOR_READ_MAX_BYTES = 16 * 1024 * 1024
 const DEFAULT_TITLE = 'New Agent'
 
-/** The ids in the root blob's field 1 (`root_prompt_messages_json`, repeated bytes), in order. */
-export function rootMessageIds(buf: Uint8Array): string[] | null {
-  const ids: string[] = []
+/** One protobuf field: varint value `v`, or length-delimited bytes `b`. Fixed32/64 are skipped. */
+type PbField = { f: number; v?: number; b?: Uint8Array }
+
+/** The fields of one protobuf message, in order, or null when it is malformed/truncated. */
+function pbFields(buf: Uint8Array): PbField[] | null {
+  const out: PbField[] = []
   let i = 0
   const varint = (): number | null => {
     let r = 0
@@ -286,17 +289,42 @@ export function rootMessageIds(buf: Uint8Array): string[] | null {
     const tag = varint()
     if (tag === null) return null
     const wire = tag & 7
+    const f = tag >>> 3
     if (wire === 0) {
-      if (varint() === null) return null
+      const v = varint()
+      if (v === null) return null
+      out.push({ f, v })
     } else if (wire === 1 || wire === 5) i += wire === 1 ? 8 : 4
     else if (wire === 2) {
       const len = varint()
       if (len === null || i + len > buf.length) return null
-      if (tag >>> 3 === 1 && len === 32) ids.push(Buffer.from(buf.subarray(i, i + len)).toString('hex'))
+      out.push({ f, b: buf.subarray(i, i + len) })
       i += len
     } else return null
   }
-  return ids
+  return out
+}
+
+/** The ids in the root blob's field 1 (`root_prompt_messages_json`, repeated bytes), in order. */
+export function rootMessageIds(buf: Uint8Array): string[] | null {
+  const fields = pbFields(buf)
+  if (!fields) return null
+  return fields.filter((x) => x.f === 1 && x.b?.length === 32).map((x) => Buffer.from(x.b as Uint8Array).toString('hex'))
+}
+
+/**
+ * The agent's own context numbers: root field 5 (`token_details`) = {1 used_tokens, 2 max_tokens}.
+ * MEASURED (cursor-agent 2026.09.28): matches the TUI's `/context`; `max` varies per session
+ * (200000 / 256000 / 300000 / 1000000), so it is read, never inferred from the model. Null unless
+ * BOTH are present and usable (no trustworthy denominator, no meter: CLAUDE.md rule 6).
+ */
+export function rootTokenDetails(buf: Uint8Array): { used: number; max: number } | null {
+  const td = pbFields(buf)?.find((x) => x.f === 5 && x.b)?.b
+  const inner = td && pbFields(td)
+  if (!inner) return null
+  const used = inner.find((x) => x.f === 1 && x.v !== undefined)?.v
+  const max = inner.find((x) => x.f === 2 && x.v !== undefined)?.v
+  return used !== undefined && used > 0 && max !== undefined && max > 0 ? { used, max } : null
 }
 
 export interface CursorStore {
@@ -304,6 +332,8 @@ export interface CursorStore {
   messages: unknown[]
   /** The chat's own name; undefined until cursor names it (its default is "New Agent"). */
   title?: string
+  /** The root's `token_details` (see `rootTokenDetails`); absent when it states none. */
+  tokens?: { used: number; max: number }
 }
 
 const asText = (d: unknown): string => (typeof d === 'string' ? d : Buffer.from(d as Uint8Array).toString('utf8'))
@@ -322,10 +352,13 @@ export async function readCursorStore(dbPath: string, maxBytes: number = CURSOR_
     const store: CursorStore = { messages: [] }
     if (name && name !== DEFAULT_TITLE) store.title = name.slice(0, 200)
     const rootId = typeof m.latestRootBlobId === 'string' ? m.latestRootBlobId : ''
-    if (!rootId || maxBytes <= 0) return store // maxBytes 0 = the name alone
+    if (!rootId) return store
     const blob = db.prepare('SELECT data FROM blobs WHERE id = ?')
     const size = db.prepare('SELECT length(data) AS n FROM blobs WHERE id = ?')
     const root = blob.get(rootId) as { data?: Uint8Array } | undefined
+    const tokens = root?.data ? rootTokenDetails(root.data) : null
+    if (tokens) store.tokens = tokens
+    if (maxBytes <= 0) return store // maxBytes 0 = the name and the token numbers, no messages
     const ids = root?.data ? rootMessageIds(root.data) : null
     if (!ids) return null
     let total = 0
@@ -409,4 +442,66 @@ export async function readCursorChat(
   const messages = opencodePageMessages(parsed.messages, page ? page.maxBytes : CHAT_PAGE_MAX_BYTES)
   if (!page) return { messages, found: true }
   return { messages, found: true, olderCursor: null, unmatchedResults: [], ...(parsed.model !== undefined ? { model: parsed.model } : {}) }
+}
+
+// ── Context meter (`USAGE_CAPABLE`) ─────────────────────────────────────────────────────────────
+
+/**
+ * `ContextTail.readSource` for a cursor `store.db`: the numbers via the ONE store reader
+ * (`readCursorStore`, messages skipped), handed to `cursorContextParse` as a one-line JSON. The
+ * change gate is the db + `-wal` (mtime, size): WAL mode leaves `store.db` itself untouched between
+ * checkpoints, and the tail polls at 1 Hz, so an unchanged store costs two stats, not an open.
+ * ponytail: polled by the shared tail rather than a bespoke hook-triggered reader; hook events only
+ * (re)track the store path. A stat-gated poll is cheap enough, and the meter needs no new timer.
+ */
+export async function readCursorContextSource(dbPath: string, lastKey: string | undefined): Promise<{ text: string; key: string } | null> {
+  let key = ''
+  for (const f of [dbPath, `${dbPath}-wal`]) {
+    try {
+      const st = await fs.promises.stat(f)
+      key += `${st.mtimeMs}:${st.size};`
+    } catch {
+      key += '-;' // no WAL file: a checkpointed store
+    }
+  }
+  if (key === lastKey) return null
+  const tokens = (await readCursorStore(dbPath, 0))?.tokens
+  return tokens ? { text: JSON.stringify(tokens), key } : null
+}
+
+/** `ContextTail` parse for cursor: the last `{used,max}` line. `window` is the store's own `max`. */
+export function cursorContextParse(text: string | string[]): { used: number; window: number; model: null } | null {
+  const lines = Array.isArray(text) ? text : text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const o: unknown = JSON.parse(lines[i])
+      if (isObj(o) && typeof o.used === 'number' && typeof o.max === 'number' && o.used > 0 && o.max > 0) {
+        return { used: o.used, window: o.max, model: null }
+      }
+    } catch {
+      /* not a JSON line */
+    }
+  }
+  return null
+}
+
+/**
+ * One hook event of a cursor node → its context tail. The store is found STRICTLY by the event's
+ * `conversation_id` (`locateCursorChat`, under the chats root only); the payload's `transcript_path`
+ * names the redacted agent-transcripts jsonl and is never read, so there is no payload path to jail
+ * and a forged POST cannot aim a read anywhere. Shared by both shells (invariant 11). A repeat event
+ * for a tracked session is a no-op, and a chat cursor has not written yet is retried by the next one.
+ * Returns the session id (the shells record it for tail release), undefined when the payload has none.
+ */
+export async function trackCursorContext(
+  tail: { track(id: string, path: string): void; pathFor(id: string): string | undefined },
+  payload: unknown
+): Promise<string | undefined> {
+  const p = isObj(payload) ? payload : {}
+  const id = typeof p.conversation_id === 'string' ? p.conversation_id : typeof p.session_id === 'string' ? p.session_id : undefined
+  if (!id || tail.pathFor(id)) return id
+  const cwd = Array.isArray(p.workspace_roots) && typeof p.workspace_roots[0] === 'string' ? p.workspace_roots[0] : undefined
+  const path = await locateCursorChat(id, cwd)
+  if (path) tail.track(id, path)
+  return id
 }

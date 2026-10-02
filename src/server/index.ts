@@ -482,7 +482,7 @@ export async function startServer(
   // Set after the initial workspace load when the opt-in flag is on. The status listener is wired
   // now so the runtime, once present, consumes the exact same normalized stream as the UI/mirror.
   let canvasControl: ServerCanvasControl | null = null
-  const { contextTail, geminiContextTail, codexContextTail } = wireAgentStatus(platform, {
+  const { contextTail, geminiContextTail, codexContextTail, cursorContextTail } = wireAgentStatus(platform, {
     onEvent: (event) => canvasControl?.onAgentEvent(event)
   })
   // The ⌘M chat view + the find-bar's transcript index. Registered HERE rather than with the rest
@@ -510,6 +510,8 @@ export async function startServer(
           return codexContextTail
         case 'gemini':
           return geminiContextTail
+        case 'cursor':
+          return cursorContextTail
         default:
           return undefined
       }

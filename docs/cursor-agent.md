@@ -211,3 +211,39 @@ cards and `at` timestamps are not supported. `/rename` is not in `RENAME_CAPABLE
 2. A chat with a very long history (compaction) and one over 16 MiB.
 3. Title chip after cursor auto-names an interactive chat (print mode leaves `New Agent`).
 4. Server Edition on Linux and Windows path hashing of the cwd bucket (only the id scan is relied on).
+
+## Context meter (`USAGE_CAPABLE`)
+
+Source: the agent's OWN numbers (CLAUDE.md rule 6), not the `stop` payload's `input_tokens` /
+`cache_read_tokens` (no window there). The store's root protobuf field 5 is `token_details` {1
+used_tokens, 2 max_tokens}; it matches the TUI's `/context`, and `max` varies per session (200000 /
+256000 / 300000 / 1000000), so it is read, never inferred. No `max`, no meter. Read by the one store
+reader (`readCursorStore` returns `tokens`; `rootMessageIds` and `rootTokenDetails` share one protobuf
+walker in `core/cursor-chat.ts`). No second SQLite reader.
+
+**Tail choice.** `createContextTail` gained one option, `readSource(path, lastKey)`, replacing the
+byte read for a source that is not a text file. Cursor's is `readCursorContextSource`: stat of
+`store.db` + `store.db-wal` as the change key (WAL leaves the db file untouched between checkpoints),
+then the store read for the numbers only, handed to `cursorContextParse` as one JSON line. The shared
+1 Hz poll does the re-reading; cursor hook events (`trackCursorContext`) only locate and track the
+store, strictly by `conversation_id` (`locateCursorChat`, chats root only, whole-UUID). ponytail: a
+poll, not a hook-triggered reader; upgrade if the stat gate ever shows up in a profile.
+
+**Jail.** No payload path is consumed: `transcript_path` names the redacted agent-transcripts jsonl and
+is ignored, so there is nothing to widen in `safeTranscriptPath`; the only path is the one the locator
+builds under `cursorConfigDir()` (honours `CURSOR_CONFIG_DIR` / `XDG_CONFIG_HOME`).
+
+**Gates.** `hasUsage` also gates `context.ensure` (now a `cursor` case: `locateCursorChat(id)`, no cwd)
+and the find-bar index and cold-resume stay on `readsClaudeTranscript`, which is false for cursor (pinned).
+
+| Surface | Status |
+|---|---|
+| Desktop | yes: raw listener `agentId === 'cursor'` in `src/main/index.ts`; ensure routes to `cursorContextTail` |
+| Server Edition | yes: same branch in `src/server/agent-status.ts` (parity), `tailFor` in `src/server/index.ts` |
+| Mobile | meter rides the shared context mirror (agent-agnostic); not device-verified |
+| SSH node | "not yet": raw branch returns for a remote node, `ensureRemote` is terminal `unresolved`, never this machine's disk |
+
+Not read: account plan limits (CLI `/usage`, needs a login credential): out of scope. Model is not
+shown (the store root states none cheaply; the popover omits it).
+Unverified: a real interactive node end to end (no dev app run), a real store read in this branch's
+tests (fixtures are synthesized), Mobile on device.

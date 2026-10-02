@@ -10,6 +10,10 @@ import path from 'node:path'
 import type { DatabaseSync as Db } from 'node:sqlite'
 import {
   cursorConfigDir,
+  cursorContextParse,
+  readCursorContextSource,
+  rootTokenDetails,
+  trackCursorContext,
   cursorTranscriptText,
   cursorUserText,
   linesFromCursor,
@@ -87,7 +91,7 @@ function varint(n: number): number[] {
 }
 
 /** `<root>/chats/<bucket>/<id>/store.db` with `messages` as the root's ordered field 1. */
-function buildStore(bucket: string, id: string, messages: unknown[], name = 'New Agent', withRoot = true): string {
+function buildStore(bucket: string, id: string, messages: unknown[], name = 'New Agent', withRoot = true, tokens: [number, number] | null = [1, 2]): string {
   const dir = path.join(root, 'chats', bucket, id)
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, 'store.db')
@@ -103,7 +107,11 @@ function buildStore(bucket: string, id: string, messages: unknown[], name = 'New
   // Field 1 per message, then the noise a real root carries (5: token details, 9: a string, 26: a varint).
   const bytes: number[] = []
   for (const h of ids) bytes.push(0x0a, 0x20, ...Buffer.from(h, 'hex'))
-  bytes.push(0x2a, 0x04, 0x08, 0x01, 0x10, 0x02, 0x4a, 0x03, 0x61, 0x62, 0x63, 0xd0, 0x01, ...varint(1790645113982))
+  if (tokens) {
+    const td = [0x08, ...varint(tokens[0]), 0x10, ...varint(tokens[1])]
+    bytes.push(0x2a, td.length, ...td)
+  }
+  bytes.push(0x4a, 0x03, 0x61, 0x62, 0x63, 0xd0, 0x01, ...varint(1790645113982))
   const rootData = Buffer.from(bytes)
   const rootId = crypto.createHash('sha256').update(rootData).digest('hex')
   put.run(rootId, rootData)
@@ -262,5 +270,98 @@ describe('Context Link text', () => {
       '  = Error: File not found',
       'assistant: Read failed, the rest worked.'
     ])
+  })
+})
+
+// ── Context meter ───────────────────────────────────────────────────────────────────────────────
+
+describe('cursor context meter: the store numbers', () => {
+  const pb = (...b: number[]) => Uint8Array.from(b)
+  it('reads root field 5 (1 used, 2 max) and nothing else', () => {
+    // field 1 noise, then field 5 = {1: 26794, 2: 200000}
+    const td = [0x08, ...varint(26794), 0x10, ...varint(200000)]
+    expect(rootTokenDetails(pb(0x0a, 0x01, 0x00, 0x2a, td.length, ...td))).toEqual({ used: 26794, max: 200000 })
+  })
+  it('states no meter without BOTH numbers, or on a malformed root (no guessed window)', () => {
+    expect(rootTokenDetails(pb(0x2a, 0x02, 0x08, 0x05))).toBeNull() // used only
+    expect(rootTokenDetails(pb(0x2a, 0x02, 0x10, 0x05))).toBeNull() // max only
+    expect(rootTokenDetails(pb(0x2a, 0x04, 0x08, 0x00, 0x10, 0x05))).toBeNull() // used 0
+    expect(rootTokenDetails(pb(0x2a, 0x09, 0x08))).toBeNull() // truncated
+    expect(rootTokenDetails(pb(0x0a, 0x01, 0x00))).toBeNull() // no field 5
+  })
+  it('readCursorStore returns them with the store, and the name-only read carries them too', async () => {
+    const f = buildStore('ctx1', ID.replace('5667', '1111'), MESSAGES, 'New Agent', true, [26794, 1000000])
+    expect((await readCursorStore(f))?.tokens).toEqual({ used: 26794, max: 1000000 })
+    expect((await readCursorStore(f, 0))?.tokens).toEqual({ used: 26794, max: 1000000 })
+    expect((await readCursorStore(f, 0))?.messages).toEqual([])
+    const bare = buildStore('ctx1', ID.replace('5667', '2222'), MESSAGES, 'New Agent', true, null)
+    expect((await readCursorStore(bare))?.tokens).toBeUndefined()
+  })
+  it('window varies per session and is the store’s own max (256000 / 300000 / 1000000)', async () => {
+    for (const [i, max] of [256000, 300000, 1000000].entries()) {
+      const pre = ['aaaa', 'bbbb', 'cccc'][i]
+      const f = buildStore('ctx2', ID.replace('5667', pre), [], 'x', true, [1000, max])
+      const r = await readCursorContextSource(f, undefined)
+      expect(cursorContextParse([r!.text])).toEqual({ used: 1000, window: max, model: null })
+    }
+  })
+})
+
+describe('cursor context meter: source gate and parse', () => {
+  it('gives the tail one JSON line, then null while db + WAL are unchanged (no reopen)', async () => {
+    const f = buildStore('ctx3', ID.replace('5667', '4444'), MESSAGES, 'x', true, [500, 200000])
+    const first = await readCursorContextSource(f, undefined)
+    expect(first && JSON.parse(first.text)).toEqual({ used: 500, max: 200000 })
+    // the first read may checkpoint+delete the WAL (last connection closing), moving the key once
+    const settled = await readCursorContextSource(f, first!.key)
+    expect(await readCursorContextSource(f, settled?.key ?? first!.key)).toBeNull()
+    // a write moves the WAL/db signature: read again, and the new used value shows
+    const db = new Database(f)
+    db.exec("INSERT INTO blobs (id, data) VALUES ('zz', x'00')")
+    db.close()
+    const again = await readCursorContextSource(f, settled?.key ?? first!.key)
+    expect(again).not.toBeNull()
+  })
+  it('a missing or unreadable store is null (the meter keeps its last value)', async () => {
+    expect(await readCursorContextSource(path.join(root, 'nope', 'store.db'), undefined)).toBeNull()
+  })
+  it('parse: the last valid line wins; garbage and non-positive numbers give null', () => {
+    expect(cursorContextParse(['{"used":1,"max":2}', 'torn{', '{"used":5,"max":10}'])).toEqual({ used: 5, window: 10, model: null })
+    expect(cursorContextParse('{"used":0,"max":10}')).toBeNull()
+    expect(cursorContextParse('{"used":3}')).toBeNull()
+    expect(cursorContextParse('')).toBeNull()
+  })
+})
+
+describe('trackCursorContext: found by id, never by a payload path', () => {
+  const tailStub = () => {
+    const tracked: [string, string][] = []
+    return { tracked, track: (i: string, p: string) => void tracked.push([i, p]), pathFor: (i: string) => tracked.find((t) => t[0] === i)?.[1] }
+  }
+  it('tracks the store under the chats root for conversation_id, ignoring transcript_path', async () => {
+    const id = ID.replace('5667', '5555')
+    const f = buildStore('ctx4', id, MESSAGES)
+    const t = tailStub()
+    expect(await trackCursorContext(t, { conversation_id: id, transcript_path: '/etc/passwd', hook_event_name: 'stop' })).toBe(id)
+    expect(t.tracked).toEqual([[id, f]])
+    // a repeat event is a no-op
+    await trackCursorContext(t, { conversation_id: id })
+    expect(t.tracked).toHaveLength(1)
+  })
+  it('an id with no store, a non-UUID id, or no id tracks nothing (never another chat)', async () => {
+    buildStore('ctx4', ID.replace('5667', '6666'), MESSAGES)
+    const t = tailStub()
+    await trackCursorContext(t, { conversation_id: '12345678-e4c7-4f28-9d99-027f84c10837' })
+    await trackCursorContext(t, { conversation_id: '../../etc' })
+    await trackCursorContext(t, {})
+    await trackCursorContext(t, null)
+    expect(t.tracked).toEqual([])
+  })
+  it('falls back to session_id (equal to conversation_id in every capture)', async () => {
+    const id = ID.replace('5667', '7777')
+    buildStore('ctx4', id, MESSAGES)
+    const t = tailStub()
+    await trackCursorContext(t, { session_id: id })
+    expect(t.tracked.map((x) => x[0])).toEqual([id])
   })
 })
