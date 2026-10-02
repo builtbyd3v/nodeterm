@@ -34,8 +34,18 @@ describe('normalizeCursor over captured cursor-agent payloads', () => {
   })
 
   it('ignores every captured event it does not subscribe to', () => {
-    for (const n of ['sessionStart', 'sessionEnd', 'beforeShellExecution', 'afterShellExecution', 'afterAgentThought'])
+    for (const n of ['sessionStart', 'beforeShellExecution', 'afterShellExecution', 'afterAgentThought'])
       for (const e of fixture.events.filter((x) => x.hook_event_name === n)) expect(normalizeCursor(env(e)), n).toBeNull()
+  })
+
+  it('maps sessionEnd to a session end, but not a background agent\'s', () => {
+    for (const e of fixture.events.filter((x) => x.hook_event_name === 'sessionEnd')) {
+      const n = normalizeCursor(env(e))
+      expect(n?.kind).toBe('session')
+      expect(n?.sessionPhase).toBe('end')
+      expect(n?.sessionId).toBe(e.conversation_id)
+    }
+    expect(normalizeCursor(env({ hook_event_name: 'sessionEnd', conversation_id: 'c', is_background_agent: true }))).toBeNull()
   })
 
   it('matches the event name exactly, never as a substring', () => {

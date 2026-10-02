@@ -30,6 +30,7 @@ import {
  *  Each value is the CLI's own DOCUMENTED PRIMARY, and is sent BARE:
  *    - grok:   `/quit` (its `/exit` is an alias).
  *    - gemini: `/quit` (alias `/exit`), measured in its bundled `docs/reference/commands.md:325`.
+ *    - cursor: `/quit`, measured in its TUI.
  *
  *  Bare is a safety rule, not a style: gemini's `/quit` also takes a `--delete` flag that exits AND
  *  *permanently deletes* the session's history and temporary files — the very conversation the
@@ -39,6 +40,9 @@ const EXIT_SEQUENCES: Record<string, string> = {
   codex: '/quit',
   grok: '/quit',
   gemini: '/quit',
+  // cursor: `/quit` (measured 2026.09.28: exits clean, fires sessionEnd). Its TUI, like opencode's,
+  // leaves text+Enter from ONE write unsubmitted, so the Enter is a separate write below.
+  cursor: '/quit',
   copilot: '/exit',
   opencode: '/exit'
 }
@@ -271,13 +275,13 @@ export async function performExitPhase(d: {
   // whereas \x15 is the safe line-clear attempt. Keep \x15 here even on Windows; WINDOWS_KILL_LINE
   // (\x1b) is strictly for shell panes (command delivery retry and hibernation wake).
   d.io.write(KILL_LINE)
-  // opencode's TUI does not submit when text and CR arrive in the same input burst
+  // opencode's (and cursor's) TUI does not submit when text and CR arrive in the same input burst
   // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
   // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
   // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
   // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
   // the minimal split so the other agents' blind-write contract stays unchanged.
-  if (d.agentId === 'opencode') {
+  if (d.agentId === 'opencode' || capabilityAgentId(d.agentId) === 'cursor') {
     d.io.write(exit)
     await new Promise((r) => setTimeout(r, 150))
     if (gone()) return 'not-eligible'

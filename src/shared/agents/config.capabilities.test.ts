@@ -31,8 +31,10 @@ import {
   resumeCommand,
   hasHooksOverSsh,
   LOCAL_ONLY_HOOK_AGENTS,
-  reportsSessionEnd
+  reportsSessionEnd,
+  resumeCommandWith
 } from './config'
+import { CURSOR_HOOK_EVENTS } from './hook-events'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
   it('all three builtin agents can context-link', () => {
@@ -413,11 +415,7 @@ describe('cursor capabilities', () => {
   })
 
   it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
-    expect(reportsSessionEnd('cursor')).toBe(false)
-    for (const can of [
-      canSubagent, canRecur, canBranch, hasUsage, canRename, canControlCanvas, canResume,
-      mintsSessionId
-    ]) {
+    for (const can of [canSubagent, canRecur, canBranch, hasUsage, canRename, canControlCanvas]) {
       expect(can('cursor')).toBe(false)
     }
     expect(readsClaudeShapedTranscript('cursor')).toBe(false)
@@ -516,5 +514,21 @@ describe('cursor capabilities (transcript leaf)', () => {
     expect(canTransferFrom('cursor')).toBe(true)
     expect(canReadTitle('cursor')).toBe(true)
     expect(canRename('cursor')).toBe(false)
+  })
+})
+
+describe('cursor capabilities (session continuity)', () => {
+  it('resumes with `--resume <id>` before the `agent` subcommand', () => {
+    expect(canResume('cursor')).toBe(true)
+    expect(resumeCommandWith('cursor-agent', 'cursor', 'abc-123')).toBe('cursor-agent --resume abc-123')
+    expect(resumeCommandWith('cursor-agent', 'cursor', 'x; rm -rf ~')).toBeNull()
+  })
+  it('mints with no probe of its own (the flag is resume, a fresh uuid is adopted)', () => {
+    expect(mintsSessionId('cursor')).toBe(true)
+    expect(supportsSessionIdFlag('cursor', false, false)).toBe(true)
+  })
+  it('reports a session end (normalizeCursor maps sessionEnd, CURSOR_HOOK_EVENTS subscribes it)', () => {
+    expect(reportsSessionEnd('cursor')).toBe(true)
+    expect(CURSOR_HOOK_EVENTS).toContain('sessionEnd')
   })
 })

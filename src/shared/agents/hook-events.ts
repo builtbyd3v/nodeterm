@@ -111,12 +111,12 @@ export const COPILOT_HOOK_EVENTS = [
 /**
  * Cursor Agent CLI hook events (→ normalizeCursor), written into `~/.cursor/hooks.json` as flat
  * `{command}` entries. Cursor's names are camelCase, and it publishes 21 of them
- * (`cursor-agent` 2026.09.28 bundle); these are the five that move the badge.
+ * (`cursor-agent` 2026.09.28 bundle); these are the five that move the badge, plus `sessionEnd`.
  *
  * Left out on purpose:
- *   - `sessionStart` / `sessionEnd`: `sessionStart` does not fire on `--resume` (measured), and
- *     mapping `sessionEnd` to a session end would put cursor in `SESSION_END_CAPABLE` (DROPPED chip)
- *     on evidence nobody has for an interactive exit (docs/cursor-agent.md §7).
+ *   - `sessionStart`: does not fire on `--resume` (measured), so it cannot be relied on.
+ *   (`sessionEnd` IS subscribed: interactive `/quit` fires it, measured; it puts cursor in
+ *   `SESSION_END_CAPABLE`. Dropping it here would make every quit read as a DROPPED crash.)
  *   - `afterAgentResponse`, `afterAgentThought`, `beforeShellExecution`, `afterShellExecution`,
  *     `afterFileEdit`, `beforeReadFile`, `beforeMCPExecution`, `afterMCPExecution`: three headless
  *     runs with all of these subscribed (and a claude-format project file beside them) lost the
@@ -132,7 +132,8 @@ export const CURSOR_HOOK_EVENTS = [
   'preToolUse',
   'postToolUse',
   'postToolUseFailure',
-  'stop'
+  'stop',
+  'sessionEnd'
 ] as const
 
 /**
