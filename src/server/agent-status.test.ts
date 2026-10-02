@@ -567,6 +567,14 @@ describe('wireAgentStatus: the cursor raw-listener branch', () => {
     expect(cursorContextTail.pathFor(parent)).toBeUndefined()
   })
 
+  it("ptyDestroy releases the node's cursor approval watch (no read may resurrect it)", () => {
+    const fh = fakeHooks()
+    const released: string[] = []
+    wireAgentStatus(platform, { hooks: { ...fh.hooks, releaseCursorNode: (id: string) => void released.push(id) } as never })
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['c4'])
+    expect(released).toEqual(['c4'])
+  })
+
   it('an unknown chat id produces no meter and no throw', async () => {
     const fh = fakeHooks()
     wireAgentStatus(platform, { hooks: fh.hooks as never })

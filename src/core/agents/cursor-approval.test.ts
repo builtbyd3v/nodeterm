@@ -204,12 +204,65 @@ describe('createCursorApprovalWatch', () => {
     expect('sessionId' in emitted[0]).toBe(false)
   })
 
-  it('an unreadable pane degrades to nothing, for a parent and a subagent call alike', async () => {
+  it('an unreadable pane degrades to nothing: one shared read, then the breaker stops the schedule', async () => {
     const { readPane, emitted, post } = setup(null)
     post('preToolUse', { tool_use_id: 't1' })
     post('preToolUse', { tool_use_id: 't2', parent_tool_call_id: 'p' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).toHaveBeenCalledTimes(2 * CURSOR_APPROVAL_READS_MS.length)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([])
+    // A new turn gets a fresh breaker.
+    post('beforeSubmitPrompt')
+    post('preToolUse', { tool_use_id: 't3' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(2)
+  })
+
+  it('a stalled reader never has more than one capture outstanding for a node', async () => {
+    let outstanding = 0
+    let most = 0
+    const readPane = vi.fn(() => {
+      outstanding++
+      most = Math.max(most, outstanding)
+      return new Promise<string>(() => {}) // an SSH master that never answers
+    })
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e) })
+    const post = (hook_event_name: string, extra: Record<string, unknown> = {}) =>
+      watch.observe('n1', { hook_event_name, conversation_id: 'c1', ...extra }, true)
+    post('preToolUse', { tool_use_id: 't1' })
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    post('stop', { status: 'completed' }) // a new turn edge while the stalled capture still hangs
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(most).toBe(1)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(emitted).toEqual([])
+  })
+
+  it('release drops the timers and an in-flight read resolving afterwards emits nothing', async () => {
+    let release: (s: string) => void = () => {}
+    const readPane = vi.fn(() => new Promise<string>((r) => (release = r)))
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e) })
+    watch.observe('n1', { hook_event_name: 'preToolUse', tool_use_id: 't1', conversation_id: 'c1' }, true)
+    watch.observe('n1', { hook_event_name: 'preToolUse', tool_use_id: 't2', conversation_id: 'c1' }, true)
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    watch.release('n1')
+    release(SHELL)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(emitted).toEqual([])
+  })
+
+  it("the parent's sessionEnd (generation_id === conversation_id) cancels an armed read", async () => {
+    // Real shape (measured 2026.10.01, /quit): the parent's own sessionEnd carries its chat id as
+    // generation_id too, so the child predicate must not swallow it.
+    const { readPane, emitted, post } = setup()
+    post('preToolUse', { tool_use_id: 't1', tool_name: 'Shell', generation_id: 'g1' })
+    post('sessionEnd', { generation_id: 'c1', session_id: 'c1', reason: 'completed', is_background_agent: false })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).not.toHaveBeenCalled()
     expect(emitted).toEqual([])
   })
 
@@ -256,6 +309,16 @@ describe('createCursorApprovalWatch', () => {
     expect(emitted).toEqual([
       { nodeId: 'n1', agentId: 'cursor', sessionId: 'c1', kind: 'state', state: 'blocked', verified: true }
     ])
+  })
+
+  it('a plan block answered with a delegated build (parent Task) goes back to working', async () => {
+    const { emitted, post } = setup(PLAN)
+    post('stop', { status: 'completed', generation_id: 'g1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted.map((e) => e.state)).toEqual(['blocked'])
+    // `b`: the build delegates. Task normalizes to subagent-start and its child's events to null.
+    post('preToolUse', { tool_use_id: 'task1', tool_name: 'Task', generation_id: 'g2' })
+    expect(emitted.map((e) => [e.state, e.sessionId])).toEqual([['blocked', 'c1'], ['working', 'c1']])
   })
 
   it('no reads without a completed stop, and a new prompt or tool call cancels the plan watch', async () => {

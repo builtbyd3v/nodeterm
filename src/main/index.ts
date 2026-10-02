@@ -3370,6 +3370,7 @@ app.whenReady().then(async () => {
   const releaseNodeTails = (nodeId: string): void => {
     remoteCodexContext.release(nodeId)
     cursorSubagents.release(nodeId)
+    hookServer.releaseCursorNode(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Untrack both tails — untracking a non-tracked session is a no-op, so this is safe

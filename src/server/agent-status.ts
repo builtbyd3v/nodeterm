@@ -36,6 +36,8 @@ import type { ServerPlatform } from './platform-server'
 /** The narrow surface of the hook server this module needs — injectable for tests. */
 export interface HookLike {
   setListener(cb: (e: NormalizedAgentEvent) => void): void
+  /** Optional so test fakes need not implement it; the real hook server does. */
+  releaseCursorNode?(nodeId: string): void
   setRawListener(
     cb: (
       agentId: string,
@@ -423,6 +425,7 @@ export function wireAgentStatus(
   //    the old session's tails are dead either way (the respawned agent re-registers its own).
   const releaseNodeTails = (nodeId: string): void => {
     cursorSubagents.release(nodeId)
+    hooks.releaseCursorNode?.(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Every agent's tail, not just claude's: `nodeContextSession` now holds gemini and codex

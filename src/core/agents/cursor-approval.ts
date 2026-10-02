@@ -120,6 +120,8 @@ export interface CursorApprovalWatchDeps {
 export interface CursorApprovalWatch {
   /** Feed every cursor hook payload, after its normalized event was emitted. */
   observe(nodeId: string, payload: Record<string, unknown>, verified: boolean): void
+  /** The node was closed or recycled: drop its timers, and let no read still in flight emit. */
+  release(nodeId: string): void
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
@@ -132,63 +134,98 @@ interface Pending {
   timer: ReturnType<typeof setTimeout> | null
   /** A SUBAGENT's tool call: normalizeCursor drops its events, so this watch also clears its block. */
   child: boolean
-  /** `blocked` was emitted for it (at most once). */
+  /** Its read matched a dialog. */
   blocked: boolean
+}
+
+interface NodeWatch {
+  /** tool_use_id (or PLAN) → its watch. */
+  calls: Map<string, Pending>
+  /** The PARENT chat id, learned from the node's parent events. A synthetic event for a child's
+   *  call carries this, never the child's id, which would overwrite the node's resume id. */
+  sessionId?: string
+  /** This watch has the node in `blocked`: one dialog is one `blocked`, however many pending calls
+   *  read it (measured: a parent call and a child call both read the child's dialog). */
+  blocked: boolean
+  /** The one capture in flight for this node. Every due read shares it, so a pane that is slow to
+   *  answer (an SSH master going bad) never has two captures outstanding. */
+  raw?: Promise<string | null>
+  /** A read came back empty or timed out: no more reads until the next turn edge. pane-probe.ts's
+   *  rule: retrying an unreadable pane on a short timer stacks ssh children, then logins. */
+  broken: boolean
 }
 
 export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): CursorApprovalWatch {
   const reads = deps.readsMs ?? (deps.delayMs !== undefined ? [deps.delayMs] : CURSOR_APPROVAL_READS_MS)
-  // nodeId → tool_use_id (or PLAN) → its watch.
-  const pending = new Map<string, Map<string, Pending>>()
-  // nodeId → the PARENT chat id, learned from the parent's own events. A synthetic event for a
-  // child's call carries this, never the child's id, which would overwrite the node's resume id.
-  const parentSession = new Map<string, string>()
-  // Nodes this watch has put in `blocked`. One dialog is one `blocked`, however many pending
-  // watches see it (measured: a parent call and a child call both read the child's dialog).
-  const blockedNodes = new Set<string>()
-
-  const drop = (nodeId: string, id?: string): void => {
-    const calls = pending.get(nodeId)
-    if (!calls) return
-    if (id === undefined) blockedNodes.delete(nodeId)
-    for (const [k, p] of calls) {
-      if (id !== undefined && k !== id) continue
-      if (p.timer) clearTimeout(p.timer)
-      calls.delete(k)
-    }
-    if (!calls.size) pending.delete(nodeId)
+  const nodes = new Map<string, NodeWatch>()
+  const nodeFor = (nodeId: string): NodeWatch => {
+    let w = nodes.get(nodeId)
+    if (!w) nodes.set(nodeId, (w = { calls: new Map(), blocked: false, broken: false }))
+    return w
   }
 
-  const emit = (nodeId: string, state: 'blocked' | 'working', verified: boolean): void => {
-    const sessionId = parentSession.get(nodeId)
+  const drop = (w: NodeWatch, id: string): void => {
+    const p = w.calls.get(id)
+    if (p?.timer) clearTimeout(p.timer)
+    w.calls.delete(id)
+  }
+  /** Turn edge: nothing of the old turn is still waiting, and the breaker gets a fresh turn. */
+  const dropAll = (w: NodeWatch): void => {
+    for (const id of [...w.calls.keys()]) drop(w, id)
+    w.blocked = false
+    w.broken = false
+  }
+
+  const emit = (nodeId: string, w: NodeWatch, state: 'blocked' | 'working', verified: boolean): void => {
+    const sessionId = w.sessionId
     deps.emit({ nodeId, agentId: 'cursor', ...(sessionId ? { sessionId } : {}), kind: 'state', state, verified })
   }
 
-  const check = async (nodeId: string, id: string, verified: boolean, step: number): Promise<void> => {
-    const p = pending.get(nodeId)?.get(id)
+  const capture = (nodeId: string, w: NodeWatch): Promise<string | null> => {
+    if (!w.raw) {
+      const p = Promise.resolve().then(() => deps.readPane(nodeId))
+      w.raw = p
+      void p.catch(() => null).then(() => {
+        if (w.raw === p) w.raw = undefined
+      })
+    }
+    const raw = w.raw
+    return probeWithin(() => raw)
+  }
+
+  const check = async (nodeId: string, w: NodeWatch, id: string, verified: boolean, step: number): Promise<void> => {
+    const p = w.calls.get(id)
     if (!p) return
     p.timer = null
-    const text = await probeWithin(() => deps.readPane(nodeId))
-    // Re-check: a post (or a new turn) that landed during the read already ended the watch.
-    if (pending.get(nodeId)?.get(id) !== p) return
-    if (text && (id === PLAN ? cursorPlanPromptIn(text) : cursorApprovalIn(text))) {
+    if (w.broken) return
+    const text = await capture(nodeId, w)
+    // Re-check: a release, a post or a new turn that landed during the read already ended the watch.
+    if (nodes.get(nodeId) !== w || w.calls.get(id) !== p) return
+    if (!text) {
+      w.broken = true
+      for (const q of w.calls.values()) {
+        if (q.timer) clearTimeout(q.timer)
+        q.timer = null
+      }
+      return
+    }
+    if (id === PLAN ? cursorPlanPromptIn(text) : cursorApprovalIn(text)) {
       p.blocked = true
-      if (!blockedNodes.has(nodeId)) emit(nodeId, 'blocked', verified)
-      blockedNodes.add(nodeId)
-      return // emitted once; the call stays pending only so a post can still end it
+      if (!w.blocked) emit(nodeId, w, 'blocked', verified)
+      w.blocked = true
+      return // the call stays pending only so a post can still end it
     }
     const next = step + 1
     if (next >= reads.length) return
-    p.timer = setTimeout(() => void check(nodeId, id, verified, next), reads[next] - reads[step])
+    p.timer = setTimeout(() => void check(nodeId, w, id, verified, next), reads[next] - reads[step])
   }
 
-  const arm = (nodeId: string, id: string, child: boolean, verified: boolean): void => {
-    drop(nodeId, id)
-    let calls = pending.get(nodeId)
-    if (!calls) pending.set(nodeId, (calls = new Map()))
+  const arm = (nodeId: string, w: NodeWatch, id: string, child: boolean, verified: boolean): void => {
+    drop(w, id)
+    if (w.broken) return
     const p: Pending = { timer: null, child, blocked: false }
-    calls.set(id, p)
-    p.timer = setTimeout(() => void check(nodeId, id, verified, 0), reads[0])
+    w.calls.set(id, p)
+    p.timer = setTimeout(() => void check(nodeId, w, id, verified, 0), reads[0])
   }
 
   return {
@@ -196,42 +233,59 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
       const ev = payload.hook_event_name
       const isTool = ev === 'preToolUse' || ev === 'postToolUse' || ev === 'postToolUseFailure'
       // A subagent's tool call (the SAME predicate normalizeCursor uses: captured children carry no
-      // parent_tool_call_id, only generation_id === conversation_id). Its approval dialog is drawn on
-      // the PARENT's pane (measured 2026.10.01), so it is watched like the parent's own, but its id
-      // never names the node's session. Any other child-looking event is ignored, as before.
-      const child = isCursorChildToolEvent(payload)
-      if (child && !isTool) return
+      // parent_tool_call_id, only generation_id === conversation_id). It applies to TOOL events only:
+      // the parent's own sessionStart/sessionEnd carry generation_id === conversation_id too.
+      // A child's dialog is drawn on the PARENT's pane (measured 2026.10.01), so it is watched like
+      // the parent's own calls.
+      const child = isTool && isCursorChildToolEvent(payload)
+      if (ev === 'sessionEnd') {
+        if (payload.is_background_agent === true) return // not this node's session (normalizeCursor)
+        const w = nodes.get(nodeId)
+        if (w) dropAll(w)
+        nodes.delete(nodeId)
+        return
+      }
+      const w = nodeFor(nodeId)
       if (!child) {
         const sid = str(payload.conversation_id) ?? str(payload.session_id)
-        if (sid) parentSession.set(nodeId, sid)
-        // A parent tool event normalizes to `working`, which already replaced any block.
-        if (isTool) blockedNodes.delete(nodeId)
+        if (sid) w.sessionId = sid
       }
       const id = str(payload.tool_use_id)
-      if (ev === 'preToolUse' && id) {
-        drop(nodeId, PLAN) // the agent is building after all
+      if (ev === 'preToolUse') {
+        drop(w, PLAN) // the agent is building after all
+        if (!child && w.blocked) {
+          // A parent tool call means the node is working. A plain call already normalizes to
+          // `working`, but a `Task` normalizes to `subagent-start` and its child's events to
+          // nothing, so a plan prompt answered with a delegated build would otherwise stay blocked.
+          w.blocked = false
+          emit(nodeId, w, 'working', verified)
+        }
         // The parent's `Task` never gets a postToolUse (measured), so a read hung on it could only
         // see its CHILD's dialog, which the child's own call already watches and later clears.
-        if (!child && payload.tool_name === 'Task') return
-        arm(nodeId, id, child, verified)
-      } else if ((ev === 'postToolUse' || ev === 'postToolUseFailure') && id) {
-        const p = pending.get(nodeId)?.get(id)
-        drop(nodeId, id)
-        if (!p?.blocked) return
-        const stillBlocked = [...(pending.get(nodeId)?.values() ?? [])].some((q) => q.blocked)
-        if (stillBlocked) return
-        blockedNodes.delete(nodeId)
-        // The parent's own post normalizes to `working`; a child's normalizes to nothing, so the
-        // block this watch raised would stick without this.
-        if (p.child) emit(nodeId, 'working', verified)
-      } else if (ev === 'sessionEnd') {
-        drop(nodeId)
-        parentSession.delete(nodeId)
+        if (!id || (!child && payload.tool_name === 'Task')) return
+        arm(nodeId, w, id, child, verified)
+      } else if (isTool && id) {
+        const p = w.calls.get(id)
+        drop(w, id)
+        if (!child) {
+          w.blocked = false // normalizes to `working`, which already replaced any block
+          return
+        }
+        if (!p?.blocked || [...w.calls.values()].some((q) => q.blocked)) return
+        // A child's post normalizes to nothing, so the block this watch raised would stick.
+        w.blocked = false
+        emit(nodeId, w, 'working', verified)
       } else if (ev === 'stop' || ev === 'beforeSubmitPrompt') {
-        drop(nodeId) // turn edge: nothing of the old turn is still waiting
+        dropAll(w)
         // A completed turn may end on plan mode's "Ready to build?": the same bounded reads.
-        if (ev === 'stop' && payload.status === 'completed') arm(nodeId, PLAN, false, verified)
+        if (ev === 'stop' && payload.status === 'completed') arm(nodeId, w, PLAN, false, verified)
       }
+    },
+    release(nodeId) {
+      const w = nodes.get(nodeId)
+      if (!w) return
+      dropAll(w)
+      nodes.delete(nodeId)
     }
   }
 }

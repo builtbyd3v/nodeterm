@@ -412,6 +412,10 @@ export class HookServer {
   setPaneReader(readPane: (nodeId: string) => Promise<string | null>): void {
     this.cursorWatch = createCursorApprovalWatch({ readPane, emit: (e) => this.listener?.(e) })
   }
+  /** A node was closed or recycled: its pending pane reads must not resurrect it as `blocked`. */
+  releaseCursorNode(nodeId: string): void {
+    this.cursorWatch?.release(nodeId)
+  }
 
   // Raw payload listener: receives the parsed (un-normalized) hook JSON. Drives the
   // contextTail/subagentTail features, which need transcript_path (not in NormalizedAgentEvent).

@@ -351,7 +351,11 @@ file?`, `Read this file?`, `Allow this web search?`, `Allow this web fetch?`) fo
 ending in `(y)`, the hook server emits `blocked` on the same listener as every hook event. The next
 event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no timer, no read; at most three reads
 per call and one `blocked` per dialog (a second pending call reading the same dialog emits nothing), so a
-long approved command never strobes. `stop`/`beforeSubmitPrompt` drop the node's pending calls.
+long approved command never strobes. `stop`/`beforeSubmitPrompt`/`sessionEnd` drop the node's pending calls,
+and closing or recycling the node releases them (`hookServer.releaseCursorNode`, both shells), so a read
+still in flight cannot bring a deleted node back as `blocked`. A node has at most ONE capture in flight
+(every due read shares it), and an empty or timed-out read stops the node's reads until the next turn
+edge: retrying an unreadable pane stacks ssh children (`pane-probe.ts`).
 
 **Subagent calls** (`isCursorChildToolEvent`: `generation_id === conversation_id`) are watched too.
 Measured on 2026.10.01 (private tmux, a Task/explore child running `find . -name '*.txt' | sed … |
@@ -370,7 +374,8 @@ changes (p or Esc)`. A parent `stop` with status `completed` therefore arms the 
 `Ready to build?` followed only by option rows ending in a `(key)` hint and the box border (it must be
 the bottom of the pane) emits `blocked`, as claude's ExitPlanMode is. Strict on purpose: the answered
 box stays in the transcript, and the build's own `stop` read it 30 lines up (measured). `b` fires no
-`beforeSubmitPrompt`; the build's first `preToolUse` normalizes to `working` and cancels the reads. Cost:
+`beforeSubmitPrompt`; the build's first parent `preToolUse` ends the block (a `Task` normalizes to
+`subagent-start`, not `working`, so the watch emits `working` itself) and cancels the reads. Cost:
 up to three pane reads after every completed turn, plan mode or not.
 
 | Surface | Desktop | Server Edition | Mobile | SSH-remote node |

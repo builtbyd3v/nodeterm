@@ -93,6 +93,7 @@ describe('both shells run the shared step and nothing else for cursor', () => {
       // the claude branch ignores Cursor's claude.sh payloads, and a closed node releases its Tasks.
       expect(src, f).toContain('if (isCursorPayload(payload)) return')
       expect(src, f).toContain('cursorSubagents.release(nodeId)')
+      expect(src, f).toMatch(/releaseCursorNode\??\.?\(nodeId\)/)
     }
   })
 })
