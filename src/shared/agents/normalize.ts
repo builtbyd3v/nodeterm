@@ -991,6 +991,7 @@ interface CursorPayload {
   session_id?: unknown
   parent_tool_call_id?: unknown
   status?: unknown
+  is_background_agent?: unknown
 }
 
 /**
@@ -1003,6 +1004,8 @@ interface CursorPayload {
  *   child's, and child activity must not drive the parent or replace its recorded session id.
  * - `stop` → `done`; `interrupted` only for status `aborted`, `errored` only for `error`. Any
  *   other status is a plain `done`, because `stop` ends the turn whatever it says.
+ *
+ * - `sessionEnd` → `session` phase `end` (SESSION_END_CAPABLE), unless `is_background_agent`.
  *
  * NEEDS YOU is deliberately absent: the AskQuestion tool fires no tool hook and Cursor's own
  * approval prompt has none either (docs/cursor-agent.md §4). Guessing one would strobe.
@@ -1033,6 +1036,11 @@ export function normalizeCursor(env: RawHookEnvelope): NormalizedAgentEvent | nu
       ...(p.status === 'aborted' ? { interrupted: true } : {}),
       ...(p.status === 'error' ? { errored: true } : {})
     }
+  }
+  // Orderly `/quit` (measured: reason "completed"). A background agent's own end is not this node's.
+  if (ev === 'sessionEnd') {
+    if (p.is_background_agent === true) return null
+    return { ...base, kind: 'session', sessionPhase: 'end' }
   }
   return null
 }

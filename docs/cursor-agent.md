@@ -101,8 +101,8 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 - Desktop and Server Edition: both via `installManagedAgentHooks`; no raw-listener branch needed
   (state comes from the normalizer, like antigravity). Mobile: status mirror is agent-agnostic.
 - SSH: no remote installer, so `cursor` is in `LOCAL_ONLY_HOOK_AGENTS` (`--after` refuses it).
-- Not joined (each is its own leaf): `RESUMABLE_AGENTS` (id is recorded and `--resume <id>` is
-  verified; the launch grammar with the `agent` subcommand is not), chat/transfer/context link
+- Not joined (each is its own leaf; resume/mint/session end/model list are now in
+  "Session continuity" below): chat/transfer/context link
   (transcript shape is only seen as JSONL user/assistant/tool_use lines), usage meter (`stop`
   carries token counts, window unmeasured), canvas control, rename, permission modes, model switch,
   subagents, `SESSION_END_CAPABLE`.
@@ -247,3 +247,62 @@ Not read: account plan limits (CLI `/usage`, needs a login credential): out of s
 shown (the store root states none cheaply; the popover omits it).
 Unverified: a real interactive node end to end (no dev app run), a real store read in this branch's
 tests (fixtures are synthesized), Mobile on device.
+
+## Session continuity (resume, mint, session end, restart, models)
+
+Measured on `cursor-agent` 2026.09.28 (macOS, tmux TUI, project-level hooks logger). One paid run
+(composer-2.5), the rest zero cost.
+
+**Grammar.** `--resume [chatId]` is a ROOT option with an OPTIONAL value: the id must directly follow
+it, then `agent '<prompt>'` may follow. Resume is `cursor-agent --resume <id> [--mode/--force] [--model X]`
+(no prompt); flags may sit either side of the id. Both composers (`resumeCommandWith` ->
+`assembleResumeCommand`, and `core/agent-launch.ts` argv) emit it; pinned in `cursor-launch.test.ts`
+and `agent-launch.test.ts`.
+
+**Dead id is safe.** `--resume <unknown uuid>` opens an empty chat that ADOPTS that id (exit 0, no
+error; a `chats/<bucket>/<id>/` dir appears). So a wrong id costs the history, never the launch.
+
+**Minting (`SESSION_ID_CAPABLE`, unconditional like copilot).** Because an unknown id is adopted, a
+fresh UUID on first launch IS minting, with no model call: `cursor-agent --resume <uuid> [flags] agent
+'<prompt>'`. Paid run: that exact line answered "pong" and `stop` carried `conversation_id` == the uuid.
+`create-chat` (1.5 s, network) is NOT used: it returns a cursor-chosen id, and nodeterm needs the id
+before launch. No help probe: the flag is the one resume already needs, and the adopt behavior is not a
+flag a probe could see. An id that already exists just resumes (never grok's "taken id" launch error).
+If an older CLI ignored the unknown id, the node degrades to the hook-learned id.
+
+**Session end (`SESSION_END_CAPABLE`).** `/quit` + Enter fires `sessionEnd` (also with a resumed
+chat). `normalizeCursor` maps it to `sessionPhase: 'end'` (skipped when `is_background_agent`), AND
+`sessionEnd` is added to `CURSOR_HOOK_EVENTS`: the list is inert, and every quit would read as a
+DROPPED crash, without the subscription. Existing installs gain it on the next installer pass.
+
+**In-place restart.** `EXIT_SEQUENCES.cursor = '/quit'` (bare). Enter is a SEPARATE write (150 ms
+split, as opencode): text+Enter in one write is not submitted. Ctrl-U (`KILL_LINE`) clears a half-typed
+draft in the cursor TUI (measured). The restart rejects `working` (cursor has no blocked state, so an
+approval prompt reads as working and is refused too).
+
+**Models.** `cursorModelsFrom` parses `cursor-agent models` (`<id> - <label>`, zero-width spaces
+stripped; 246 of 246 lines matched, header and Tip ignored) into `{id, name}`. Probe: `core/cursor-cli.ts`
+(`registerCursorCliIpc`, in BOTH shells), memoized, a failed/empty probe is retried, fails open to [].
+Channel mirrors grok's: `IPC.cursorCliCaps`, `window.nodeTerminal.cursor.cliCaps()` (preload, ws-bridge,
+stub), renderer memo `ensureCursorCliCaps`/`cursorCliCapsNow` warmed at boot, and `modelsForAgent(...,
+cursorModels)` fed by Canvas. This lights the restart menu's "Switch model" for cursor.
+
+**Cold-resume presence: not built.** `transcriptExists`/`shouldProbeTranscript` is claude-only and has
+no agent argument on its channel; the store locator (`locateCursorChat`, strictly by id) could answer,
+but the dead-id behavior makes it unnecessary: a missing chat resumes into an empty chat under the same
+id instead of failing like claude. The only loss is the "lost session" notice.
+
+| Capability | Desktop | Server Edition | Mobile | SSH-remote node |
+|---|---|---|---|---|
+| Resume / cold restore / restart / mint | yes | yes (core + shared composer) | N/A | `cursor` has no remote installer (`LOCAL_ONLY_HOOK_AGENTS`); no hook id, mint still gives one, remote run unverified |
+| Session end (DROPPED chip) | yes | yes (normalizer is shared) | status mirror | no hooks over SSH, so no chip |
+| Model catalogue | yes (IPC) | yes (WS-RPC handler) | N/A | lists THIS machine's account |
+
+### Not verified (device checklist)
+
+1. `sessionEnd` on Ctrl-C twice, SIGTERM, and a closed terminal (only `/quit` measured).
+2. Mint on an older cursor-agent that may not adopt an unknown id.
+3. `sessionEnd` of a subagent chat (`is_background_agent` only guards the flag, never seen true).
+4. `--resume <id>` after the real chat has history inside a restart, including the Switch model path.
+5. Windows `cursor-agent` argv for resume (composer pinned, never run).
+6. Models list under an account switch (memoized per process) and offline.

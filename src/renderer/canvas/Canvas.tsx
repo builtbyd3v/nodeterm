@@ -546,7 +546,7 @@ import {
 } from '@shared/node-colors'
 import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
-import { activePermissionMode, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
+import { activePermissionMode, cursorCliCapsNow, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
 import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSshServers } from '../state/sshServers'
@@ -1517,6 +1517,7 @@ export function Canvas() {
   // through the same probe memo the launch path uses; `modelsForAgent` decides who gets it, so no
   // model id and no agent id is spelled here.
   const grokModelList = (): GatewayModel[] => grokCliCapsNow().models.map((id) => ({ id }))
+  const cursorModelList = (): GatewayModel[] => cursorCliCapsNow().models
   const gatewayStatus = useModelGateway((s) => s.status)
   const gatewayError = useModelGateway((s) => s.error)
   const discoverModels = useModelGateway((s) => s.discover)
@@ -8882,7 +8883,7 @@ export function Canvas() {
               : []
             const switchCapable = !!sourceAgentId && canSwitchModel(sourceAgentId)
             const compatibleModels = sourceAgentId && session.source !== 'relay'
-              ? modelsForAgent(gatewayModels, sourceAgentId, grokModelList())
+              ? modelsForAgent(gatewayModels, sourceAgentId, grokModelList(), cursorModelList())
               : []
             const currentModel =
               typeof n?.data.agentModel === 'string' ? n.data.agentModel : undefined

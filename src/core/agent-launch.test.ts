@@ -180,6 +180,28 @@ describe("prepareAgentLaunch logical argv", () => {
     ).resolves.toEqual({ command: "'cursor-agent' 'agent' 'hi'" });
   });
 
+  it("resumes and mints Cursor with `--resume <id>` before the `agent` subcommand", async () => {
+    const id = "550e8400-e29b-41d4-a716-446655440000";
+    await expect(
+      prepareAgentLaunch(
+        resume("cursor", id, { permissionMode: "plan" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({
+      command: `'cursor-agent' '--resume' '${id}' '--mode' 'plan'`,
+    });
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", newSessionId: id }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({
+      command: `'cursor-agent' '--resume' '${id}' 'agent' 'hi'`,
+    });
+  });
+
   it("uses flag-prompt for OpenCode and preserves a trailing slash", async () => {
     await expect(
       prepareAgentLaunch(

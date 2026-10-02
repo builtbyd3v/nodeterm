@@ -8,6 +8,8 @@ import {
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   UNKNOWN_GROK_CLI_CAPS,
+  UNKNOWN_CURSOR_CLI_CAPS,
+  type CursorCliCaps,
   type ClaudeCliCaps,
   type GrokCliCaps,
   type Project
@@ -97,6 +99,29 @@ export function ensureGrokCliCaps(): Promise<GrokCliCaps> {
 /** Last-known grok caps, synchronously — node creation is a sync factory. */
 export function grokCliCapsNow(): GrokCliCaps {
   return grokCaps
+}
+
+/** cursor's catalogue, same shape: fail-open [] until `cursor.cliCaps()` answers. Own memo (rule 9). */
+let cursorCaps: CursorCliCaps = UNKNOWN_CURSOR_CLI_CAPS
+let cursorCapsPromise: Promise<CursorCliCaps> | null = null
+
+export function ensureCursorCliCaps(): Promise<CursorCliCaps> {
+  if (!cursorCapsPromise) {
+    const probe = Promise.resolve()
+      .then(() => window.nodeTerminal.cursor.cliCaps())
+      .then((c) => (cursorCaps = c ?? UNKNOWN_CURSOR_CLI_CAPS))
+      .catch(() => UNKNOWN_CURSOR_CLI_CAPS)
+    const timeout = new Promise<CursorCliCaps>((resolve) =>
+      setTimeout(() => resolve(cursorCaps), CAPS_WAIT_MS)
+    )
+    cursorCapsPromise = Promise.race([probe, timeout])
+  }
+  return cursorCapsPromise
+}
+
+/** Last-known cursor caps, synchronously. */
+export function cursorCliCapsNow(): CursorCliCaps {
+  return cursorCaps
 }
 
 /** Test seam for the grok memo. */

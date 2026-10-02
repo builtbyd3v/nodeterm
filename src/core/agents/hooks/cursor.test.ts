@@ -62,11 +62,11 @@ describe('installCursorHooks', () => {
   it('sweeps our entry off an event we no longer subscribe, and keeps the rest of that event', () => {
     const other = { command: 'other' }
     fs.mkdirSync(path.dirname(hooksJson), { recursive: true })
-    fs.writeFileSync(hooksJson, JSON.stringify({ version: 1, hooks: { afterAgentResponse: [{ command: cursorCommandFor(script) }, other], sessionEnd: [{ command: cursorCommandFor(script) }] } }))
+    fs.writeFileSync(hooksJson, JSON.stringify({ version: 1, hooks: { afterAgentResponse: [{ command: cursorCommandFor(script) }, other], sessionStart: [{ command: cursorCommandFor(script) }] } }))
     install()
     const cfg = read()
     expect(cfg.hooks.afterAgentResponse).toEqual([other])
-    expect(cfg.hooks.sessionEnd).toBeUndefined()
+    expect(cfg.hooks.sessionStart).toBeUndefined()
   })
 
   it('does not claim a user script that merely shares the name', () => {

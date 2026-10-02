@@ -223,6 +223,11 @@ export const AGENT_HOOK_TARGETS = [
 // the history, never the launch. Without membership a cold restore (machine reboot) brought an agy
 // node back as a bare shell under an Antigravity badge (`canColdRestore` needs `canResume`).
 // UNVERIFIED on a device: that the hook's conversationId is the id `--conversation` accepts.
+//
+// cursor: `cursor-agent --resume <conversation_id>` (measured 2026.09.28, docs/cursor-agent.md). The
+// flag is a root option with an OPTIONAL value, so it goes BEFORE the `agent` subcommand and its id
+// must directly follow it. A dead id is the SAFE failure: cursor opens an EMPTY chat that ADOPTS the
+// requested id (exit 0, no error), so a wrong id costs the history, never the launch.
 export const RESUMABLE_AGENTS = [
   'claude',
   'codex',
@@ -230,7 +235,8 @@ export const RESUMABLE_AGENTS = [
   'opencode',
   'grok',
   'copilot',
-  'antigravity'
+  'antigravity',
+  'cursor'
 ] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
@@ -248,7 +254,7 @@ export const RESUMABLE_AGENTS = [
 // clear/fork/compact), so hooks remain the only way to TRACK an id after launch. What minting
 // guarantees is that a node always has SOME resumable id, so the worst case degrades from "the
 // conversation is gone" to "continuity since the last /clear is gone".
-export const SESSION_ID_CAPABLE = ['claude', 'copilot', 'grok'] as const
+export const SESSION_ID_CAPABLE = ['claude', 'copilot', 'grok', 'cursor'] as const
 // Claude's flag is version-gated and comes from the Claude CLI probe. Copilot's installed 1.0.80
 // binary and current official reference accept `--session-id=<uuid>`, so it does not borrow an
 // unrelated Claude probe result. Custom agents resolve through their declared base harness.
@@ -261,7 +267,15 @@ export const SESSION_ID_CAPABLE = ['claude', 'copilot', 'grok'] as const
 // LAUNCH ERROR and never a resume; `--session-id` combines with `--resume`/`--continue` only
 // alongside `--fork-session`; and `--resume` accepts a TITLE as well as an id, failing as ambiguous
 // on duplicates — which is why nothing in this codebase resumes grok by title.
-export const UNCONDITIONAL_SESSION_ID_CAPABLE = ['copilot'] as const
+//
+// cursor mints with `--resume <uuid>` and NO probe of its own, unlike grok: the flag is the same one
+// resume already depends on (a CLI without it could not resume either), and the behavior is not a
+// flag a help probe could see. Measured 2026.09.28 with a paid TUI run: `cursor-agent --resume
+// <fresh uuid> --model composer-2.5 --force agent '<prompt>'` answered, and every hook payload's
+// `conversation_id` was that uuid; with no prompt the same line opens an empty chat under that id
+// (no model call). An id that already exists simply resumes, so a taken id is never a launch error
+// (grok's is). If an older CLI ignored the unknown id, the node degrades to hook-learned ids.
+export const UNCONDITIONAL_SESSION_ID_CAPABLE = ['copilot', 'cursor'] as const
 // claude: Task/Agent tool via hooks (tool_use_id-keyed). codex: spawn_agent collaboration via its
 // native SubagentStart/SubagentStop hooks (agent_id-keyed), measured on codex-cli 0.146.0.
 // grok: its own native SubagentStart/SubagentStop, keyed by `subagentId` — measured on 1.0.13 by
@@ -380,7 +394,10 @@ export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'cu
 //
 // Before adding an id: find its normalizer's `sessionPhase: 'end'` branch. If there isn't one, the
 // branch is the change — this list is a consequence of it, never a substitute for it.
-export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok'] as const
+//
+// cursor: `sessionEnd` fires on an orderly `/quit` (measured 2026.09.28, `reason: "completed"`), and
+// `CURSOR_HOOK_EVENTS` subscribes to it; both halves are needed, the list is inert without the event.
+export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'cursor'] as const
 // Agents that accept a node title being PUSHED back into the session — the write leg only. The
 // write is the same literal `/rename <name>` for both, which grok also accepts as `/title`.
 // The READ leg is TITLE_READ_CAPABLE below, which is a superset: an agent can name its own session
@@ -683,9 +700,12 @@ export function withSessionId(cmd: string, id: AgentId, sessionId: string): stri
   if (!mintsSessionId(id)) return cmd
   const sid = sessionId.trim()
   if (!sid || !SAFE_SESSION_ID.test(sid)) return cmd
-  return capabilityAgentId(id) === 'copilot'
-    ? `${cmd} --session-id=${sid}`
-    : `${cmd} --session-id ${sid}`
+  const base = capabilityAgentId(id)
+  if (base === 'copilot') return `${cmd} --session-id=${sid}`
+  // cursor has no session-id flag: `--resume <unknown uuid>` opens an empty chat that adopts the id
+  // (measured, docs/cursor-agent.md). A root option with an optional value, so it sits before `agent`.
+  if (base === 'cursor') return `${cmd} --resume ${sid}`
+  return `${cmd} --session-id ${sid}`
 }
 
 /**
@@ -766,6 +786,7 @@ export function resumeCommandWith(
     case 'claude':
     case 'gemini':
     case 'grok':
+    case 'cursor':
       return `${launchCmd} --resume ${sid}`
     default:
       return null
