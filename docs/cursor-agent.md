@@ -145,7 +145,7 @@ tests.
 | nodeterm mode | emitted | why |
 |---|---|---|
 | Ask each time (`manual`) | nothing | cursor's default is `approvalMode: allowlist`; a shell command off the allowlist stops at "Run this command? Not in allowlist" (measured) |
-| Auto (`auto`, the default) | nothing | `--auto-review` would auto-run calls a bare cursor prompts for: widens every existing node at upgrade |
+| Auto (`auto`, the default) | `--auto-review` | Cursor's Smart Auto: a classifier auto-runs safe calls and prompts for the rest, the same shape as claude's `auto`. Measured on 2026.10.01: `touch` ran unprompted, footer "Auto-review". Cursor ships in this change, so no existing node widens. |
 | Accept edits | nothing | no flag means "auto-approve edits, prompt for shell" |
 | Plan | `--mode plan` | measured: a "create a file" prompt produced a written plan ("Ready to build?"), no file |
 | Bypass all | `--force` | measured: the shell command ran with no prompt, footer "Run Everything" |
@@ -167,7 +167,7 @@ none, transfer targets stay flat, the gateway default model is not applied).
    a session id, and cursor is neither (`--resume [chatId]` and `create-chat` exist). The transfer
    menu carries the gateway list only. When cursor joins `RESUMABLE_AGENTS`, add a `cursorModelsFrom`
    parser plus a memoized probe beside `grokModelsFrom` and return it from `modelsForAgent`.
-2. `--auto-review` widening was read from the help text and the footer label, not measured behaviorally.
+2. `--auto-review` measured on one safe command only (`touch` auto-ran); which calls its classifier still prompts for is Cursor's server-side policy and was not mapped.
 3. What cursor does with an unknown `--model` id is unmeasured.
 4. `--model` in the TUI adds the id to `modelParameters` / `modelSelectionHistory` in
    `~/.cursor/cli-config.json` (seen on the real config); it did not change the saved default model.

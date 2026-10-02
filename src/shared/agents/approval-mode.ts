@@ -149,6 +149,7 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
 }
 
 const CURSOR_MODES: Partial<Record<AgentPermissionMode, string>> = {
+  auto: 'auto-review',
   plan: 'plan',
   bypassPermissions: 'force'
   // MEASURED on cursor-agent 2026.09.28-64d2043: the flags reach the session from BEFORE the `agent`
@@ -161,15 +162,17 @@ const CURSOR_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // `manual` → cursor's own default, NO flag, and that default really prompts: `approvalMode:
   // "allowlist"` in ~/.cursor/cli-config.json, shell commands off the allowlist stop at a dialog.
   //
-  // `auto` and `acceptEdits` are ABSENT ON PURPOSE. `auto` is DEFAULT_PERMISSION_MODE, so what it
-  // emits is what every untouched cursor node launches with after this lands. The candidate is
-  // `--auto-review` ("a server classifier auto-runs safe tool calls and prompts for the rest"), and
-  // it is a real Auto-shaped feature, but a bare cursor prompts for those calls: mapping it would
-  // have loosened every existing cursor node at upgrade, silently, with `modeSupported` answering
-  // true so no copy admitted it (the gemini `auto_edit` trap). Not emitted, so `modeSupported`
-  // says false and `unsupportedModesNote` admits it. No flag means "auto-approve edits, prompt for
-  // shell" either, so `acceptEdits` has no candidate at all. `--mode ask` (read-only Q&A) and
-  // `--sandbox` (a separate axis, like codex's) are deliberately not touched.
+  // `auto` → `--auto-review` ("Auto-review (Smart Auto): a server classifier auto-runs safe tool
+  // calls and prompts for the rest"). That is the same shape as claude's `--permission-mode auto`
+  // (a classifier decides), so it is the honest equivalent, not a nearest match. MEASURED on
+  // 2026.10.01-e373342: `--auto-review agent '<touch a file>'` ran `touch` with no prompt and the
+  // footer read "Auto-review". `auto` is DEFAULT_PERMISSION_MODE, so this IS what an untouched cursor
+  // node launches with. It was first left bare to avoid widening existing nodes at upgrade (the
+  // gemini `auto_edit` trap), but cursor ships in this same change, so there are no existing nodes,
+  // and the bare allowlist default asked for every command (the user's own report, 2026-10-02).
+  // No flag means "auto-approve edits, prompt for shell", so `acceptEdits` has no candidate and
+  // `unsupportedModesNote` admits it. `--mode ask` (read-only Q&A) and `--sandbox` (a separate
+  // axis, like codex's) are deliberately not touched.
   //
   // `--force` over its alias `--yolo`: same code path ("Run Everything"), and `--force` is the name
   // `--help` gives first.
@@ -202,7 +205,8 @@ const APPROVAL_DIALECTS: Partial<Record<AgentId, ApprovalDialect>> = {
     flag: '--mode',
     modes: CURSOR_MODES,
     manualIsDefault: true,
-    spell: (value) => (value === 'force' ? ['--force'] : ['--mode', value])
+    spell: (value) =>
+      value === 'force' ? ['--force'] : value === 'auto-review' ? ['--auto-review'] : ['--mode', value]
   }
 }
 

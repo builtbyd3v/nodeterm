@@ -213,31 +213,34 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
  * Measured in a real run, see CURSOR_MODES.
  */
 describe('approvalFlags: cursor', () => {
-  it('maps plan to --mode plan and bypass to --force, and nothing else', () => {
+  it('maps auto to --auto-review, plan to --mode plan and bypass to --force, and nothing else', () => {
+    expect(approvalFlags('cursor', 'auto')).toEqual(['--auto-review'])
     expect(approvalFlags('cursor', 'plan')).toEqual(['--mode', 'plan'])
     expect(approvalFlags('cursor', 'bypassPermissions')).toEqual(['--force'])
-    for (const m of ['manual', 'auto', 'acceptEdits'] as const)
+    for (const m of ['manual', 'acceptEdits'] as const)
       expect(approvalFlags('cursor', m), m).toEqual([])
   })
 
-  it('leaves the DEFAULT mode bare, so an upgrade never loosens an existing cursor node', () => {
-    // `auto` is DEFAULT_PERMISSION_MODE. `--auto-review` (a classifier that auto-runs tool calls a
-    // bare cursor prompts for) is the tempting mapping, and it would silently widen every node.
-    expect(approvalFlags('cursor', DEFAULT_PERMISSION_MODE)).toEqual([])
-    expect(withPermissionMode('cursor-agent', 'cursor', DEFAULT_PERMISSION_MODE)).toBe('cursor-agent')
+  it('launches the DEFAULT mode in Auto-review, never in Run Everything', () => {
+    // `auto` is DEFAULT_PERMISSION_MODE. Measured: `--auto-review` auto-runs safe calls through a
+    // classifier and still prompts for the rest; a bare cursor asks for every command.
+    expect(approvalFlags('cursor', DEFAULT_PERMISSION_MODE)).toEqual(['--auto-review'])
+    expect(withPermissionMode('cursor-agent', 'cursor', DEFAULT_PERMISSION_MODE)).toBe(
+      'cursor-agent --auto-review'
+    )
     for (const m of ALL_PERMISSION_MODES)
-      expect(approvalFlags('cursor', m).join(' '), m).not.toMatch(/auto-review|yolo|sandbox|ask/)
+      expect(approvalFlags('cursor', m).join(' '), m).not.toMatch(/yolo|sandbox|ask/)
+    expect(approvalFlags('cursor', DEFAULT_PERMISSION_MODE)).not.toContain('--force')
   })
 
   it('admits exactly the modes it cannot express', () => {
     expect(modeSupported('cursor', 'manual')).toBe(true) // its own default already prompts
+    expect(modeSupported('cursor', 'auto')).toBe(true)
     expect(modeSupported('cursor', 'plan')).toBe(true)
     expect(modeSupported('cursor', 'bypassPermissions')).toBe(true)
-    expect(modeSupported('cursor', 'auto')).toBe(false)
     expect(modeSupported('cursor', 'acceptEdits')).toBe(false)
-    expect(unsupportedModesNote()).toContain(
-      "Auto and Accept edits have no Cursor equivalent, so Cursor sessions start in Cursor's own default."
-    )
+    expect(unsupportedModesNote()).not.toMatch(/Auto and Accept edits have no Cursor/)
+    expect(unsupportedModesNote()).toMatch(/Accept edits has no Cursor equivalent/)
   })
 
   it('lets a wrapper that already spells the flag win, per flag', () => {

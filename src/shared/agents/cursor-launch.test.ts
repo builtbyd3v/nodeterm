@@ -35,8 +35,9 @@ describe('cursor launch line', () => {
     expect(line({ permissionMode: 'plan', model: 'composer-2.5' })).toBe(
       "cursor-agent --mode plan --model 'composer-2.5' agent 'hi'"
     )
-    // The default mode is bare: nothing widens on upgrade.
-    expect(line({ permissionMode: 'auto' })).toBe("cursor-agent agent 'hi'")
+    // The default mode is Auto-review (a classifier), never Run Everything.
+    expect(line({ permissionMode: 'auto' })).toBe("cursor-agent --auto-review agent 'hi'")
+    expect(line({ permissionMode: 'manual' })).toBe("cursor-agent agent 'hi'")
     expect(
       assembleLaunchCommand({ agentId: 'cursor', permissionMode: 'plan', model: 'composer-2.5' }, {})
         .command

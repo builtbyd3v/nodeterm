@@ -177,7 +177,7 @@ describe("prepareAgentLaunch logical argv", () => {
         "posix",
         builtinContext("cursor"),
       ),
-    ).resolves.toEqual({ command: "'cursor-agent' 'agent' 'hi'" });
+    ).resolves.toEqual({ command: "'cursor-agent' '--auto-review' 'agent' 'hi'" });
   });
 
   it("resumes and mints Cursor with `--resume <id>` before the `agent` subcommand", async () => {
