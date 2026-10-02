@@ -6,12 +6,17 @@
  * then silence; an MCP one by `preToolUse` (+ `beforeMCPExecution`). No event, no payload flag.
  * Approve AND skip both end the call with `postToolUse` for the same `tool_use_id`.
  *
- * So: a cursor `preToolUse` whose `tool_use_id` has no `postToolUse`/`postToolUseFailure` after
- * CURSOR_APPROVAL_DELAY_MS gets ONE pane read (the same `captureSession` the context link uses).
- * If the bottom of the pane holds Cursor's own approval dialog, the node goes `blocked`. The next
+ * So: a cursor `preToolUse` whose `tool_use_id` has no `postToolUse`/`postToolUseFailure` gets a
+ * pane read at each of CURSOR_APPROVAL_READS_MS (the same `captureSession` the context link uses),
+ * stopping at the first that shows Cursor's own approval dialog: the node goes `blocked`. The next
  * hook event (postToolUse on approve or skip, stop on Esc) normalizes to `working`/`done` and
- * replaces it. Nothing polls: no pending tool = no timer and no read; one read per tool call, so a
+ * replaces it. Nothing polls open-endedly: no pending tool = no timer and no read; at most
+ * CURSOR_APPROVAL_READS_MS.length reads per tool call and `blocked` is emitted once, so a
  * long-running approved command never strobes (rule 7).
+ *
+ * Why more than one read: MEASURED in the dev app (2026-10-02), a single read 1.5 s after
+ * `preToolUse` found no dialog yet and the node sat on RUNNING while the dialog waited ~30 s; the
+ * same pane text captured later matched. The dialog's draw time is not ours to know.
  *
  * The dialog test is a closed set (rule 7/14): an exact heading line from the bundle's
  * `decision-logic.ts` (`HR`) plus an option line ending in Cursor's approve hint `(y)`. Anything
@@ -39,9 +44,12 @@ export const CURSOR_APPROVAL_HEADINGS: ReadonlySet<string> = new Set([
   'Allow this web fetch?'
 ])
 
-/** Wait this long for the matching postToolUse before reading the pane. An auto-allowed tool
+/** Wait this long for the matching postToolUse before the first pane read. An auto-allowed tool
  *  posts well inside it; an approval waits on a human. */
 export const CURSOR_APPROVAL_DELAY_MS = 1500
+/** When (ms after `preToolUse`) a still-pending call reads the pane; the first match wins.
+ *  ponytail: fixed bounded schedule; a dialog first drawn after the last read stays RUNNING. */
+export const CURSOR_APPROVAL_READS_MS: readonly number[] = [CURSOR_APPROVAL_DELAY_MS, 4000, 10000]
 
 /**
  * The dialog sits at the bottom of the screen. Only the last few non-blank lines are looked at, so
@@ -69,6 +77,8 @@ export interface CursorApprovalWatchDeps {
   /** Where the synthetic `blocked` goes: the hook server's normalized listener. */
   emit: (ev: NormalizedAgentEvent) => void
   delayMs?: number
+  /** Override the whole read schedule (tests). Default CURSOR_APPROVAL_READS_MS, or [delayMs]. */
+  readsMs?: readonly number[]
 }
 
 export interface CursorApprovalWatch {
@@ -79,7 +89,7 @@ export interface CursorApprovalWatch {
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
 
 export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): CursorApprovalWatch {
-  const delay = deps.delayMs ?? CURSOR_APPROVAL_DELAY_MS
+  const reads = deps.readsMs ?? (deps.delayMs !== undefined ? [deps.delayMs] : CURSOR_APPROVAL_READS_MS)
   // nodeId → tool_use_id → its timer (null once the one read has been spent).
   const pending = new Map<string, Map<string, ReturnType<typeof setTimeout> | null>>()
 
@@ -94,14 +104,29 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
     if (!calls.size) pending.delete(nodeId)
   }
 
-  const check = async (nodeId: string, id: string, sessionId: string | undefined, verified: boolean): Promise<void> => {
+  const check = async (
+    nodeId: string,
+    id: string,
+    sessionId: string | undefined,
+    verified: boolean,
+    step: number
+  ): Promise<void> => {
     const calls = pending.get(nodeId)
     if (!calls?.has(id)) return
     calls.set(id, null)
     const text = await probeWithin(() => deps.readPane(nodeId))
     // Re-check: a postToolUse that landed during the read already ended the call.
-    if (!text || !pending.get(nodeId)?.has(id) || !cursorApprovalIn(text)) return
-    deps.emit({ nodeId, agentId: 'cursor', sessionId, kind: 'state', state: 'blocked', verified })
+    if (!pending.get(nodeId)?.has(id)) return
+    if (text && cursorApprovalIn(text)) {
+      deps.emit({ nodeId, agentId: 'cursor', sessionId, kind: 'state', state: 'blocked', verified })
+      return // emitted once; the call stays pending only so a post can still drop it
+    }
+    const next = step + 1
+    if (next >= reads.length) return
+    pending.get(nodeId)?.set(
+      id,
+      setTimeout(() => void check(nodeId, id, sessionId, verified, next), reads[next] - reads[step])
+    )
   }
 
   return {
@@ -115,7 +140,7 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
         const sessionId = str(payload.conversation_id) ?? str(payload.session_id)
         let calls = pending.get(nodeId)
         if (!calls) pending.set(nodeId, (calls = new Map()))
-        calls.set(id, setTimeout(() => void check(nodeId, id, sessionId, verified), delay))
+        calls.set(id, setTimeout(() => void check(nodeId, id, sessionId, verified, 0), reads[0]))
       } else if ((ev === 'postToolUse' || ev === 'postToolUseFailure') && id) {
         drop(nodeId, id)
       } else if (ev === 'stop' || ev === 'beforeSubmitPrompt') {

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createCursorApprovalWatch, cursorApprovalIn, CURSOR_APPROVAL_DELAY_MS } from './cursor-approval'
+import {
+  createCursorApprovalWatch,
+  cursorApprovalIn,
+  CURSOR_APPROVAL_DELAY_MS,
+  CURSOR_APPROVAL_READS_MS
+} from './cursor-approval'
 import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
 import { _resetForTest, mirrorEntry, recordAgentEvent, sweepStaleWorking } from '../agent-status-mirror'
 import { WORKING_STALE_MS } from '../../shared/agents/stale'
@@ -112,12 +117,24 @@ describe('createCursorApprovalWatch', () => {
     expect(readPane).not.toHaveBeenCalled()
   })
 
-  it('a long approved command (no dialog on screen) stays quiet', async () => {
+  it('a long approved command (no dialog on screen) stays quiet after a bounded number of reads', async () => {
     const { readPane, emitted, post } = setup(RUNNING)
     post('preToolUse', { tool_use_id: 't1' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
     expect(emitted).toEqual([])
+  })
+
+  it('a dialog drawn after the first read is caught by a later one, and emitted once', async () => {
+    // Measured in the dev app: the first read 1.5 s after preToolUse saw no dialog yet.
+    let n = 0
+    const readPane = vi.fn(async () => (++n === 1 ? RUNNING : SHELL))
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e) })
+    watch.observe('n1', { hook_event_name: 'preToolUse', tool_use_id: 't1', conversation_id: 'c1' }, true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(2)
+    expect(emitted.map((e) => e.state)).toEqual(['blocked'])
   })
 
   it('a post that lands during the read wins', async () => {
@@ -138,7 +155,7 @@ describe('createCursorApprovalWatch', () => {
     post('preToolUse', { tool_use_id: 't1' })
     post('preToolUse', { tool_use_id: 't2', parent_tool_call_id: 'p' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length) // t1 only; t2 never read
     expect(emitted).toEqual([])
   })
 })
