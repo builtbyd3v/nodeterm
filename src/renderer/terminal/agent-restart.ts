@@ -9,6 +9,7 @@ import {
   canResumeWith,
   capabilityAgentId,
   resumeCommand,
+  submitsSeparately,
   type AgentId
 } from '../../shared/agents/config'
 import { isShellCommand } from '@shared/agents/pane'
@@ -126,6 +127,8 @@ export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
+/** Gap between the split exit writes (Ctrl-U, exit text, Enter) for a TUI that batches input. */
+export const EXIT_KEY_GAP_MS = 150
 
 /**
  * How much longer a user-asked RESTART keeps watching after RESTART_EXIT_TIMEOUT_MS, as long as
@@ -275,15 +278,23 @@ export async function performExitPhase(d: {
   // whereas \x15 is the safe line-clear attempt. Keep \x15 here even on Windows; WINDOWS_KILL_LINE
   // (\x1b) is strictly for shell panes (command delivery retry and hibernation wake).
   d.io.write(KILL_LINE)
+  // A separate-submit TUI (cursor) also DROPS the exit line when it lands in the same input burst
+  // as the Ctrl-U: measured on 2026.10.01 in tmux, Ctrl-U+`/quit` then Enter 150 ms later left an
+  // empty composer and a running CLI, 10 of 10; a gap after the Ctrl-U too exited 10 of 10.
+  const separate = submitsSeparately(d.agentId)
+  if (separate) {
+    await new Promise((r) => setTimeout(r, EXIT_KEY_GAP_MS))
+    if (gone()) return 'not-eligible'
+  }
   // opencode's (and cursor's) TUI does not submit when text and CR arrive in the same input burst
   // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
   // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
   // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
   // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
   // the minimal split so the other agents' blind-write contract stays unchanged.
-  if (d.agentId === 'opencode' || capabilityAgentId(d.agentId) === 'cursor') {
+  if (d.agentId === 'opencode' || separate) {
     d.io.write(exit)
-    await new Promise((r) => setTimeout(r, 150))
+    await new Promise((r) => setTimeout(r, EXIT_KEY_GAP_MS))
     if (gone()) return 'not-eligible'
     d.io.write('\r')
   } else {

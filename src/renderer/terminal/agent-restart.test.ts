@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { resumeCommand } from '../../shared/agents/config'
+import { resumeCommand, setCustomAgentBaseResolver } from '../../shared/agents/config'
 import { withPermissionMode } from '../../shared/agents/approval-mode'
 import {
   __resetAgentRestartForTests,
@@ -15,6 +15,7 @@ import {
   performRestartResume,
   performResumePhase,
   planBulkRestart,
+  EXIT_KEY_GAP_MS,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
   registerAgentHibernate,
@@ -722,9 +723,8 @@ describe('performExitPhase', () => {
     // opencode's TUI swallows a one-burst `/exit\r` (measured 1.18.18-1.18.25, Linux, tmux, isolated
     // socket: `/exit` left in composer with popup armed, exit-timeout at 6s; split CR by 100ms exits
     // in ~500ms, shipped with 150ms). This pins the split so a refactor cannot silently re-batch it.
-    // cursor's TUI leaves text+Enter from one write unsubmitted too (measured 2026.09.28).
-    for (const agentId of ['opencode', 'cursor'] as const) {
-      const exit = agentId === 'cursor' ? '/quit' : '/exit'
+    for (const agentId of ['opencode'] as const) {
+      const exit = '/exit'
       const { written, io } = fakeIo()
       let pane: string = agentId
       const p = performExitPhase({
@@ -762,6 +762,31 @@ describe('performExitPhase', () => {
       pane = 'zsh'
       await vi.advanceTimersByTimeAsync(5000)
       expect(await p).toBe('exited')
+    }
+  })
+
+  it('cursor (separate submit) gets Ctrl-U, a gap, `/quit`, a gap, then Enter', async () => {
+    // Measured 2026.10.01 in tmux: Ctrl-U and `/quit` in one burst, Enter 150 ms later, left the
+    // CLI running 10 of 10 (`/quit` dropped); with a gap after the Ctrl-U too it exited 10 of 10.
+    // A custom agent based on cursor gets the same sequence.
+    setCustomAgentBaseResolver((id) => (id === 'my-cursor' ? 'cursor' : undefined))
+    try {
+      for (const agentId of ['cursor', 'my-cursor']) {
+        const { written, io } = fakeIo()
+        let pane = 'cursor-agent'
+        const p = performExitPhase({ agentId, sessionId: 'sid-1', io, paneCommand: async () => pane, timeoutMs: 6000, pollMs: 100 })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(written).toEqual(['\x15'])
+        await vi.advanceTimersByTimeAsync(EXIT_KEY_GAP_MS)
+        expect(written).toEqual(['\x15', '/quit'])
+        await vi.advanceTimersByTimeAsync(EXIT_KEY_GAP_MS)
+        expect(written).toEqual(['\x15', '/quit', '\r'])
+        pane = 'zsh'
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(await p).toBe('exited')
+      }
+    } finally {
+      setCustomAgentBaseResolver(null)
     }
   })
 
