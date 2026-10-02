@@ -314,7 +314,13 @@ export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'g
 // `core/grok-signals.ts` reads exactly three of them and nothing else. If a future grok drops
 // `contextWindowTokens`, that reader returns null and the meter disappears — no inferred
 // denominator, because a percentage over a guessed window is a wrong number presented as a fact.
-export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
+//
+// Cursor joined in 2026-09 with the agent's own numbers, like grok: the store's root protobuf field 5
+// (`token_details`: used_tokens, max_tokens), which matches the TUI's `/context` (`core/cursor-chat.ts`).
+// It joins the meter ONLY: its ids are not in CLAUDE_TRANSCRIPT_READABLE, so the find bar's index and
+// cold-resume stay off claude's cwd-fallback resolver, and `context.ensure` locates a cursor chat by id.
+// Account plan limits (CLI `/usage`) are a different, credentialed number and are not read.
+export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'cursor'] as const
 // Agents whose structured transcript we can render as a chat panel (Cmd+M chat mode).
 //
 // SPLIT from CLAUDE_TRANSCRIPT_READABLE below on 2026-09-02, when grok joined. Until then this one

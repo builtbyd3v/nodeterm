@@ -215,6 +215,7 @@ import { createSubagentTail } from '../core/subagent-tail'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
+import { cursorContextParse, readCursorContextSource, trackCursorContext } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
@@ -2453,6 +2454,12 @@ app.whenReady().then(async () => {
     parse: grokContextParse,
     wholeFile: true
   })
+  // cursor's fourth tail. Its numbers are in a SQLite store, not a text file, so `readSource` replaces
+  // the byte read (stat-gated on the db + WAL). Same construction in both shells (invariant 11).
+  const cursorContextTail = createContextTail(pushContextUpdate, {
+    parse: cursorContextParse,
+    readSource: readCursorContextSource
+  })
   // Remote (SSH-project) counterparts: a node whose pty runs on a remote host has its Claude
   // transcript on that host, so its meter / subagent transcript / search must read over the
   // project's ControlMaster. One RemoteFile bound to the SSH-project manager's own ssh runner
@@ -2745,6 +2752,8 @@ app.whenReady().then(async () => {
           return codexContextTail
         case 'gemini':
           return geminiContextTail
+        case 'cursor':
+          return cursorContextTail
         default:
           return undefined
       }
@@ -3060,6 +3069,18 @@ app.whenReady().then(async () => {
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   // Hook server validates session-env capacity and caller identity once for both shells.
   hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
+    if (agentId === 'cursor') {
+      // A remote (SSH) cursor node: "not yet". Its chat is on the host and there is no remote leg, so
+      // it is never metered from this machine's disk (no cursor SSH hooks reach here today anyway).
+      if (nodeId && (ptyManager.sshRemoteForNode(nodeId) || workspaceStore.sshProjectIdForNode(nodeId))) return
+      // The store is found by the event's conversation_id alone (`trackCursorContext`); the payload's
+      // transcript_path is the redacted agent-transcripts jsonl and is never read, so no jail applies.
+      // A cursor subagent's own events (parent_tool_call_id) carry the parent's id, so they re-track nothing.
+      void trackCursorContext(cursorContextTail, payload).then((id) => {
+        if (nodeId && id) nodeContextSession.set(nodeId, id)
+      })
+      return
+    }
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
       // Everything the claude path does below hangs off `transcript_path`. Grok DOES send one --
@@ -3341,6 +3362,7 @@ app.whenReady().then(async () => {
       geminiContextTail.untrack(sessionId)
       codexContextTail.untrack(sessionId)
       grokContextTail.untrack(sessionId)
+      cursorContextTail.untrack(sessionId)
       remoteContextTail.untrack(sessionId)
       remoteTranscriptBySession.delete(sessionId)
       locatedTranscriptSessions.delete(sessionId)

@@ -19,6 +19,7 @@ import { createContextTail, type ContextTail, type TaskNotification } from '../c
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
+import { cursorContextParse, readCursorContextSource, trackCursorContext } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
@@ -68,7 +69,7 @@ export interface WireAgentStatusOptions {
 export function wireAgentStatus(
   platform: ServerPlatform,
   opts: WireAgentStatusOptions = {}
-): { contextTail: ContextTail; geminiContextTail: ContextTail; codexContextTail: ContextTail } {
+): { contextTail: ContextTail; geminiContextTail: ContextTail; codexContextTail: ContextTail; cursorContextTail: ContextTail } {
   const hooks = opts.hooks ?? hookServer
   // nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
   // since the grok branch below, grok's)
@@ -147,6 +148,12 @@ export function wireAgentStatus(
     parse: grokContextParse,
     wholeFile: true
   })
+  // cursor's fourth tail. Its numbers are in a SQLite store, not a text file, so `readSource` replaces
+  // the byte read (stat-gated on the db + WAL). Same construction in both shells (invariant 11).
+  const cursorContextTail = createContextTail(pushContextUpdate, {
+    parse: cursorContextParse,
+    readSource: readCursorContextSource
+  })
 
   hooks.setListener((e) => {
     // Record FIRST: recordAgentEvent computes the stash-priority classification and returns the
@@ -190,6 +197,15 @@ export function wireAgentStatus(
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   // Hook server validates session-env capacity and caller identity once for both shells.
   hooks.setRawListener((agentId, nodeId, payload, _meta) => {
+    if (agentId === 'cursor') {
+      // The store is found by the event's conversation_id alone (`trackCursorContext`); the payload's
+      // transcript_path is the redacted agent-transcripts jsonl and is never read, so no jail applies.
+      // A cursor subagent's own events (parent_tool_call_id) carry the parent's id, so they re-track nothing.
+      void trackCursorContext(cursorContextTail, payload).then((id) => {
+        if (nodeId && id) nodeContextSession.set(nodeId, id)
+      })
+      return
+    }
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
       // Everything the claude path does below hangs off `transcript_path`. Grok DOES send one --
@@ -402,6 +418,7 @@ export function wireAgentStatus(
       geminiContextTail.untrack(sessionId)
       codexContextTail.untrack(sessionId)
       grokContextTail.untrack(sessionId)
+      cursorContextTail.untrack(sessionId)
       nodeContextSession.delete(nodeId)
     }
     const subs = nodeSubagents.get(nodeId)
@@ -416,5 +433,5 @@ export function wireAgentStatus(
   // `codexContextTail` joins the two already returned so `src/server/index.ts` can register the
   // context-meter rehydration over all three. Keeping a tail private here would mean a second
   // instance somewhere else metering the same sessions twice.
-  return { contextTail, geminiContextTail, codexContextTail }
+  return { contextTail, geminiContextTail, codexContextTail, cursorContextTail }
 }

@@ -495,3 +495,54 @@ it('passes observed session capacity through the Server Edition transcript jail'
   fh.fireRaw('claude', 'capacity-node', { session_id: 'capacity', transcript_path: '/outside-jail/secret' }, true, 64000)
   expect(ctx.calls).toHaveLength(before)
 })
+
+/**
+ * The cursor branch of the raw listener: the store is found by conversation_id under CURSOR_CONFIG_DIR
+ * and the REAL tail pushes its numbers (used/max from root field 5) to the renderer channel; the
+ * payload's transcript_path is never followed. The desktop copy in src/main/index.ts is the same call
+ * (`trackCursorContext`), which the core tests pin.
+ */
+describe('wireAgentStatus: the cursor raw-listener branch', () => {
+  let cfg: string, prev: string | undefined
+  beforeEach(() => {
+    cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-cursor-'))
+    prev = process.env.CURSOR_CONFIG_DIR
+    process.env.CURSOR_CONFIG_DIR = cfg
+  })
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CURSOR_CONFIG_DIR
+    else process.env.CURSOR_CONFIG_DIR = prev
+    fs.rmSync(cfg, { recursive: true, force: true })
+  })
+
+  it('meters a cursor node from its store, and ptyDestroy releases the tail', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const id = '5667590a-e4c7-4f28-9d99-027f84c10837'
+    const d = path.join(cfg, 'chats', 'b', id)
+    fs.mkdirSync(d, { recursive: true })
+    const db = new DatabaseSync(path.join(d, 'store.db'))
+    db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);')
+    // root: field 5 = {1: 40000, 2: 200000}
+    const root = Buffer.from([0x2a, 0x08, 0x08, 0xc0, 0xb8, 0x02, 0x10, 0xc0, 0x9a, 0x0c])
+    db.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)').run('r00t', root)
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(Buffer.from(JSON.stringify({ latestRootBlobId: 'r00t', name: 'New Agent' })).toString('hex'))
+    db.close()
+
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never })
+    fh.fireRaw('cursor', 'c1', { hook_event_name: 'stop', conversation_id: id, transcript_path: '/etc/passwd' })
+    const deadline = Date.now() + 3000
+    const update = () => sent.find((s) => s.channel === IPC.contextUpdate)
+    while (!update() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
+    expect(update()?.args[0]).toMatchObject({ sessionId: id, usedTokens: 40000, windowTokens: 200000, windowSource: 'transcript' })
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['c1'])
+  })
+
+  it('an unknown chat id produces no meter and no throw', async () => {
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never })
+    fh.fireRaw('cursor', 'c2', { hook_event_name: 'stop', conversation_id: '5667590a-e4c7-4f28-9d99-027f84c10999' })
+    await new Promise((r) => setTimeout(r, 100))
+    expect(sent.find((s) => s.channel === IPC.contextUpdate)).toBeUndefined()
+  })
+})

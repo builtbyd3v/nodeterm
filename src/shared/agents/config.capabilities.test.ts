@@ -415,7 +415,7 @@ describe('cursor capabilities', () => {
   it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
     expect(reportsSessionEnd('cursor')).toBe(false)
     for (const can of [
-      canSubagent, canRecur, canBranch, hasUsage, canRename, canControlCanvas, canResume,
+      canSubagent, canRecur, canBranch, canRename, canControlCanvas, canResume,
       mintsSessionId
     ]) {
       expect(can('cursor')).toBe(false)
@@ -516,5 +516,17 @@ describe('cursor capabilities (transcript leaf)', () => {
     expect(canTransferFrom('cursor')).toBe(true)
     expect(canReadTitle('cursor')).toBe(true)
     expect(canRename('cursor')).toBe(false)
+  })
+})
+
+describe('cursor capabilities (context meter)', () => {
+  it('joins USAGE_CAPABLE with the agent’s own store numbers', () => {
+    expect(hasUsage('cursor')).toBe(true)
+  })
+  it('stays off claude’s transcript resolver: no find-bar index, no cold-resume, no cwd fallback', () => {
+    // hasUsage also gates context.ensure and the find bar's index in older code; the split is
+    // readsClaudeShapedTranscript, which must stay false or a cursor node is handed a stranger's claude session.
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
+    expect(readsClaudeShapedTranscript('claude')).toBe(true)
   })
 })
