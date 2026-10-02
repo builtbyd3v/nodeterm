@@ -147,9 +147,6 @@ interface NodeWatch {
   /** This watch has the node in `blocked`: one dialog is one `blocked`, however many pending calls
    *  read it (measured: a parent call and a child call both read the child's dialog). */
   blocked: boolean
-  /** The one capture in flight for this node. Every due read shares it, so a pane that is slow to
-   *  answer (an SSH master going bad) never has two captures outstanding. */
-  raw?: Promise<string | null>
   /** A read came back empty or timed out: no more reads until the next turn edge. pane-probe.ts's
    *  rule: retrying an unreadable pane on a short timer stacks ssh children, then logins. */
   broken: boolean
@@ -158,6 +155,12 @@ interface NodeWatch {
 export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): CursorApprovalWatch {
   const reads = deps.readsMs ?? (deps.delayMs !== undefined ? [deps.delayMs] : CURSOR_APPROVAL_READS_MS)
   const nodes = new Map<string, NodeWatch>()
+  // Nodes with a pane capture outstanding. At most one per node, and it outlives release, turn
+  // edges and sessionEnd: it is cleared only when the capture itself settles, because a probe that
+  // timed out abandons the WAIT, not the ssh child (pane-probe.ts), so a replacement session must not
+  // start a second one beside it. A due read finding its node here is skipped, never handed the
+  // other read's result: that snapshot may belong to another turn.
+  const inFlight = new Set<string>()
   const nodeFor = (nodeId: string): NodeWatch => {
     let w = nodes.get(nodeId)
     if (!w) nodes.set(nodeId, (w = { calls: new Map(), blocked: false, broken: false }))
@@ -181,16 +184,10 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
     deps.emit({ nodeId, agentId: 'cursor', ...(sessionId ? { sessionId } : {}), kind: 'state', state, verified })
   }
 
-  const capture = (nodeId: string, w: NodeWatch): Promise<string | null> => {
-    if (!w.raw) {
-      const p = Promise.resolve().then(() => deps.readPane(nodeId))
-      w.raw = p
-      void p.catch(() => null).then(() => {
-        if (w.raw === p) w.raw = undefined
-      })
-    }
-    const raw = w.raw
-    return probeWithin(() => raw)
+  const schedule = (nodeId: string, w: NodeWatch, id: string, p: Pending, verified: boolean, step: number): void => {
+    const next = step + 1
+    if (next >= reads.length) return
+    p.timer = setTimeout(() => void check(nodeId, w, id, verified, next), reads[next] - reads[step])
   }
 
   const check = async (nodeId: string, w: NodeWatch, id: string, verified: boolean, step: number): Promise<void> => {
@@ -198,7 +195,11 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
     if (!p) return
     p.timer = null
     if (w.broken) return
-    const text = await capture(nodeId, w)
+    if (inFlight.has(nodeId)) return schedule(nodeId, w, id, p, verified, step)
+    inFlight.add(nodeId)
+    const raw = Promise.resolve().then(() => deps.readPane(nodeId))
+    void raw.catch(() => null).then(() => inFlight.delete(nodeId))
+    const text = await probeWithin(() => raw)
     // Re-check: a release, a post or a new turn that landed during the read already ended the watch.
     if (nodes.get(nodeId) !== w || w.calls.get(id) !== p) return
     if (!text) {
@@ -215,9 +216,7 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
       w.blocked = true
       return // the call stays pending only so a post can still end it
     }
-    const next = step + 1
-    if (next >= reads.length) return
-    p.timer = setTimeout(() => void check(nodeId, w, id, verified, next), reads[next] - reads[step])
+    schedule(nodeId, w, id, p, verified, step)
   }
 
   const arm = (nodeId: string, w: NodeWatch, id: string, child: boolean, verified: boolean): void => {
@@ -246,7 +245,10 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
         return
       }
       const w = nodeFor(nodeId)
-      if (!child) {
+      // Only a parent event names the node's session: any event with generation_id ===
+      // conversation_id (a child's tool call, or a child's non-tool event such as
+      // beforeShellExecution) carries the CHILD's chat id, which would replace the resume id.
+      if (!isCursorChildToolEvent(payload)) {
         const sid = str(payload.conversation_id) ?? str(payload.session_id)
         if (sid) w.sessionId = sid
       }

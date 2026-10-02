@@ -240,6 +240,50 @@ describe('createCursorApprovalWatch', () => {
     expect(emitted).toEqual([])
   })
 
+  it("a new turn's watch never takes the OLD turn's capture: its own fresh read decides", async () => {
+    let resolveOld: (s: string) => void = () => {}
+    let n = 0
+    const readPane = vi.fn(() => (++n === 1 ? new Promise<string>((r) => (resolveOld = r)) : Promise.resolve(RUNNING)))
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e), readsMs: [100, 3000] })
+    const post = (hook_event_name: string, extra: Record<string, unknown> = {}) =>
+      watch.observe('n1', { hook_event_name, conversation_id: 'c1', generation_id: 'g1', ...extra }, true)
+    post('preToolUse', { tool_use_id: 'old', tool_name: 'Shell' })
+    await vi.advanceTimersByTimeAsync(100) // the old capture starts (it will hold the old dialog)
+    post('beforeSubmitPrompt', { generation_id: 'g2' })
+    post('preToolUse', { tool_use_id: 'new', tool_name: 'Shell', generation_id: 'g2' })
+    await vi.advanceTimersByTimeAsync(100) // due while the old capture is in flight: skipped
+    resolveOld(SHELL)
+    await vi.advanceTimersByTimeAsync(5000) // its next slot reads fresh: a running command
+    expect(emitted).toEqual([])
+    expect(readPane).toHaveBeenCalledTimes(2)
+  })
+
+  it('a replacement session after release never starts a second capture beside a stalled one', async () => {
+    let outstanding = 0
+    let most = 0
+    const readPane = vi.fn(() => {
+      most = Math.max(most, ++outstanding)
+      return new Promise<string>(() => {})
+    })
+    const watch = createCursorApprovalWatch({ readPane, emit: () => {}, readsMs: [25, 50, 75] })
+    watch.observe('n1', { hook_event_name: 'preToolUse', tool_use_id: 'old', conversation_id: 'old-s' }, true)
+    await vi.advanceTimersByTimeAsync(40)
+    watch.release('n1')
+    watch.observe('n1', { hook_event_name: 'preToolUse', tool_use_id: 'new', conversation_id: 'new-s' }, true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(most).toBe(1)
+  })
+
+  it("a child's non-tool event (generation_id === conversation_id) never becomes the node's session", async () => {
+    const { emitted, post } = setup()
+    post('beforeSubmitPrompt', { generation_id: 'g1' })
+    post('beforeShellExecution', { conversation_id: 'child-1', generation_id: 'child-1', command: 'ls' })
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted.map((e) => e.sessionId)).toEqual(['c1'])
+  })
+
   it('release drops the timers and an in-flight read resolving afterwards emits nothing', async () => {
     let release: (s: string) => void = () => {}
     const readPane = vi.fn(() => new Promise<string>((r) => (release = r)))

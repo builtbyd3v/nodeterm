@@ -353,9 +353,15 @@ event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no ti
 per call and one `blocked` per dialog (a second pending call reading the same dialog emits nothing), so a
 long approved command never strobes. `stop`/`beforeSubmitPrompt`/`sessionEnd` drop the node's pending calls,
 and closing or recycling the node releases them (`hookServer.releaseCursorNode`, both shells), so a read
-still in flight cannot bring a deleted node back as `blocked`. A node has at most ONE capture in flight
-(every due read shares it), and an empty or timed-out read stops the node's reads until the next turn
-edge: retrying an unreadable pane stacks ssh children (`pane-probe.ts`).
+still in flight cannot bring a deleted node back as `blocked`. A node has at most ONE capture in flight,
+across turns, release and a replacement session: a read due while one is outstanding is skipped (never
+handed that read's snapshot, which may be another turn's) and its next slot reads fresh. An empty or
+timed-out read stops the node's reads until the next turn edge: retrying an unreadable pane stacks ssh
+children (`pane-probe.ts`). Only a parent event names the node's session: any event with
+`generation_id === conversation_id` is a child's and never lends its id to a synthetic event.
+No subagent `sessionEnd` was seen in any capture (three subagent runs plus the reviewers'); the
+parent's own `sessionEnd` also has `generation_id === conversation_id`, so the two could not be told
+apart by that field if a child one ever appeared (unverified).
 
 **Subagent calls** (`isCursorChildToolEvent`: `generation_id === conversation_id`) are watched too.
 Measured on 2026.10.01 (private tmux, a Task/explore child running `find . -name '*.txt' | sed … |
