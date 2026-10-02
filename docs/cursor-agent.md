@@ -193,14 +193,16 @@ real chats (a `-p` run with a shell turn and a write/read/grep turn, plus an old
 **Storage.** `<config>/chats/<md5(physical cwd)>/<chatId>/store.db`, where `<config>` is
 `$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor` (the CLI's own rule).
 `<chatId>` is a UUID: the `--resume` id and the stream-json `session_id` (stable across resume).
-2026.09.28 also writes a `meta.json` sidecar; an empty chat's `store.db` is deleted, the sidecar stays.
+2026.09.28 also writes a `meta.json` sidecar. `--resume <id>` of an unknown id creates `store.db` at
+once (meta key `0` = hex JSON with `latestRootBlobId: ""`); only a fresh TUI quit before any turn
+leaves `meta.json` alone, with no `store.db`.
 The store is SQLite (WAL): `meta` key `0` = hex(JSON) with `latestRootBlobId` and `name`; `blobs` is
 content addressed (sha256). The root blob is protobuf (`ConversationStateStructure`): field 1 lists the
 ordered ids of the model-context messages, each an AI-SDK-shaped JSON blob (system / user / assistant
 parts `text`, `reasoning`, `redacted-reasoning`, `tool-call` / tool `tool-result`). The typed prompt is
-`<user_query>` inside a user text part; everything else in user messages is injected context. Also in
-the root (not used): field 5 has `used / window` context tokens (26794 / 200000 in one chat), a
-candidate for the usage leaf.
+`<user_query>` inside a user text part; everything else in user messages is injected context. The
+root's field 5 holds `used / window` context tokens, which the meter reads ("Context meter"; verified
+18335 / 200000 = the TUI footer's 9.2%).
 Not used: `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`. Its text reads `[REDACTED]`, it
 has no tool results and lost the user line of a failed turn.
 
@@ -348,9 +350,28 @@ non-blank lines hold an exact heading from the bundle's `decision-logic.ts` (`Ru
 file?`, `Read this file?`, `Allow this web search?`, `Allow this web fetch?`) followed by an option
 ending in `(y)`, the hook server emits `blocked` on the same listener as every hook event. The next
 event (`postToolUse` on y/n, `stop` on Esc) replaces it. No pending tool = no timer, no read; at most three reads
-per call and one `blocked` emit, so a long approved command never strobes. `stop`/`beforeSubmitPrompt`
-drop the node's pending calls; subagent calls (`isCursorChildToolEvent`: `generation_id ===
-conversation_id`) are ignored.
+per call and one `blocked` per dialog (a second pending call reading the same dialog emits nothing), so a
+long approved command never strobes. `stop`/`beforeSubmitPrompt` drop the node's pending calls.
+
+**Subagent calls** (`isCursorChildToolEvent`: `generation_id === conversation_id`) are watched too.
+Measured on 2026.10.01 (private tmux, a Task/explore child running `find . -name '*.txt' | sed … |
+sort`): the child's `preToolUse` Shell drew `Run this command?` / `Not in allowlist: find, sed, sort` /
+`→ Run (once) (y)` on the PARENT pane while the parent turn was still working. The watch emits `blocked`
+1.5 s later with the PARENT's chat id (remembered from the node's parent events; omitted if none was
+seen yet), never the child's, which would replace the node's resume id. normalizeCursor drops child
+events, so the child's `postToolUse` (measured for `y`, and for `n` + an empty "tell the agent" line)
+makes the watch emit `working` itself. The parent's `Task` call is not watched: it never gets a
+`postToolUse`, and watched it caught the child's dialog first and emitted a duplicate `blocked`
+(measured before the fix).
+
+**Plan mode.** Measured (`--mode plan`): the turn ends with `stop` status `completed`, then the pane
+shows `Ready to build?` / `→ 1. Yes, build locally (b)` / `2. Yes, build in cloud (c)` / `3. No, propose
+changes (p or Esc)`. A parent `stop` with status `completed` therefore arms the same three reads, and
+`Ready to build?` followed only by option rows ending in a `(key)` hint and the box border (it must be
+the bottom of the pane) emits `blocked`, as claude's ExitPlanMode is. Strict on purpose: the answered
+box stays in the transcript, and the build's own `stop` read it 30 lines up (measured). `b` fires no
+`beforeSubmitPrompt`; the build's first `preToolUse` normalizes to `working` and cancels the reads. Cost:
+up to three pane reads after every completed turn, plan mode or not.
 
 | Surface | Desktop | Server Edition | Mobile | SSH-remote node |
 |---|---|---|---|---|
@@ -359,7 +380,8 @@ conversation_id`) are ignored.
 | Chat send / agent messaging refuse while blocked | `chatSendRefusal` = `dialog`; `decideDelivery` = `targetBusy` | same | same | same |
 
 Not covered: AskQuestion (no hook to hang a read on; the node shows RUNNING while it waits). The
-headings other than shell and MCP are bundle-read, not seen in a pane.
+headings other than shell and MCP are bundle-read, not seen in a pane. Unmeasured: `p`/Esc on the plan
+prompt (no hook expected; the node stays NEEDS YOU until the next prompt's `beforeSubmitPrompt`).
 
 ### SSH hook installer (`RemoteHooks.installCursorRemote`)
 
