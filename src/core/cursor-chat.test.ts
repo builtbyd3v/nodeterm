@@ -312,12 +312,14 @@ describe('cursor context meter: source gate and parse', () => {
     const f = buildStore('ctx3', ID.replace('5667', '4444'), MESSAGES, 'x', true, [500, 200000])
     const first = await readCursorContextSource(f, undefined)
     expect(first && JSON.parse(first.text)).toEqual({ used: 500, max: 200000 })
-    expect(await readCursorContextSource(f, first!.key)).toBeNull()
+    // the first read may checkpoint+delete the WAL (last connection closing), moving the key once
+    const settled = await readCursorContextSource(f, first!.key)
+    expect(await readCursorContextSource(f, settled?.key ?? first!.key)).toBeNull()
     // a write moves the WAL/db signature: read again, and the new used value shows
     const db = new Database(f)
     db.exec("INSERT INTO blobs (id, data) VALUES ('zz', x'00')")
     db.close()
-    const again = await readCursorContextSource(f, first!.key)
+    const again = await readCursorContextSource(f, settled?.key ?? first!.key)
     expect(again).not.toBeNull()
   })
   it('a missing or unreadable store is null (the meter keeps its last value)', async () => {
@@ -349,7 +351,7 @@ describe('trackCursorContext: found by id, never by a payload path', () => {
   it('an id with no store, a non-UUID id, or no id tracks nothing (never another chat)', async () => {
     buildStore('ctx4', ID.replace('5667', '6666'), MESSAGES)
     const t = tailStub()
-    await trackCursorContext(t, { conversation_id: OTHER })
+    await trackCursorContext(t, { conversation_id: '12345678-e4c7-4f28-9d99-027f84c10837' })
     await trackCursorContext(t, { conversation_id: '../../etc' })
     await trackCursorContext(t, {})
     await trackCursorContext(t, null)
