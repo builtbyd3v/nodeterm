@@ -15,6 +15,7 @@ import { recordAgentEvent, recordRawToolEvent, recordContextUsage,
   recordQuestionResult, ignoreQuestionHook
 } from '../core/agent-status-mirror'
 import { createSubagentTail, type SubagentTail } from '../core/subagent-tail'
+import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
@@ -103,6 +104,14 @@ export function wireAgentStatus(
     subagentTail.finish(n.toolUseId)
     nodeSubagents.get(nodeId)?.delete(n.toolUseId)
   }
+  // Cursor's subagent END (its hooks never send one) and child tail; same tracker in the desktop.
+  const cursorSubagents = createCursorSubagentTracker({
+    tail: subagentTail,
+    emit: (ev) => {
+      platform.broadcast(IPC.agentStatus, ev)
+      recordAgentEvent(ev)
+    }
+  })
 
   /** See the identical handler in src/main/index.ts: a tool RESULT settles an ask that ended with
    *  no hook (Esc on an AskUserQuestion), which otherwise left the node stuck on needs-you. */
@@ -287,6 +296,10 @@ export function wireAgentStatus(
       // substitutes for the other: `applyGrokHookSession` did the first (and does it for PostCompact
       // too, which this call site cannot see). The tail is this shell's, so it is released here.
       if (plan.forgetSessionId) grokContextTail.untrack(plan.forgetSessionId)
+      return
+    }
+    if (agentId === 'cursor') {
+      cursorSubagents.onRaw(agentId, nodeId, payload)
       return
     }
     // gemini and codex both carry `transcript_path` in their hook envelope (gemini: the base input

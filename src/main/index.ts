@@ -212,6 +212,7 @@ import { initCanvasSync } from '../core/canvas-sync'
 import { retainUntilDismissed } from './notifications'
 import { installManagedAgentHooks } from '../core/agents/hooks'
 import { createSubagentTail } from '../core/subagent-tail'
+import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
@@ -2415,6 +2416,14 @@ app.whenReady().then(async () => {
     remoteSubagentTail.untrack(n.toolUseId)
     nodeSubagents.get(nodeId)?.delete(n.toolUseId)
   }
+  // Cursor's subagent END (its hooks never send one) and child tail; same tracker in the server.
+  const cursorSubagents = createCursorSubagentTracker({
+    tail: subagentTail,
+    emit: (ev) => {
+      sendToMain(IPC.agentStatus, ev)
+      recordAgentEvent(ev)
+    }
+  })
   // Every context tail pushes through here, so an agent's meter reaches the renderer, the Notch HUD
   // and the phone's context ring identically whichever CLI produced the numbers.
   const pushContextUpdate = (payload: unknown): void => {
@@ -3157,6 +3166,10 @@ app.whenReady().then(async () => {
       // substitutes for the other: `applyGrokHookSession` did the first (and does it for PostCompact
       // too, which this call site cannot see). The tail is this shell's, so it is released here.
       if (plan.forgetSessionId) grokContextTail.untrack(plan.forgetSessionId)
+      return
+    }
+    if (agentId === 'cursor') {
+      cursorSubagents.onRaw(agentId, nodeId, payload)
       return
     }
     // gemini and codex both carry `transcript_path` in their hook envelope (gemini: the base input
