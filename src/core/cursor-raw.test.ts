@@ -5,6 +5,7 @@ import { applyCursorRaw } from './cursor-chat'
 import { createCursorSubagentTracker } from './cursor-subagents'
 import type { SubagentTail } from './subagent-tail'
 import type { NormalizedAgentEvent } from '../shared/agents/normalize'
+import { _inboxSnapshot, _resetForTest } from './agent-status-mirror'
 
 // Review 2026-10-02: both shells returned from their first cursor branch, so the subagent tracker
 // below it never ran, and a child's tool events re-pointed the node's session (and leaked a tail).
@@ -66,6 +67,21 @@ describe('applyCursorRaw over the captured subagent turn', () => {
   })
 })
 
+describe("applyCursorRaw feeds the phone's activity line", () => {
+  const activity = () => _inboxSnapshot().nodes['n1']?.activity
+  it('a parent tool call is the activity, a child one is not, and stop clears it', () => {
+    _resetForTest()
+    const r = rig(true) // remote too: the line needs no file
+    r.run({ hook_event_name: 'preToolUse', conversation_id: PARENT, generation_id: 'g1', tool_name: 'Shell', tool_input: { command: 'npm test' } })
+    expect(activity()).toBe('Running npm test')
+    r.run(ev.find((e) => e.hook_event_name === 'preToolUse' && e.tool_name === 'Read')!) // the child's Read
+    expect(activity()).toBe('Running npm test')
+    r.run({ hook_event_name: 'stop', conversation_id: PARENT, status: 'completed' })
+    expect(activity()).toBeUndefined()
+    _resetForTest()
+  })
+})
+
 describe('both shells run the shared step and nothing else for cursor', () => {
   it('calls applyCursorRaw and has no second, unreachable cursor branch', () => {
     for (const f of ['src/main/index.ts', 'src/server/agent-status.ts']) {
@@ -73,6 +89,10 @@ describe('both shells run the shared step and nothing else for cursor', () => {
       expect(src, f).toContain('applyCursorRaw(')
       expect(src.match(/agentId === 'cursor'\) \{/g)?.length ?? 0, f).toBe(1)
       expect(src, f).not.toContain('cursorSubagents.onRaw(')
+      // Parity for the two fixes the desktop has no harness for (the server's are behavioural tests):
+      // the claude branch ignores Cursor's claude.sh payloads, and a closed node releases its Tasks.
+      expect(src, f).toContain('if (isCursorPayload(payload)) return')
+      expect(src, f).toContain('cursorSubagents.release(nodeId)')
     }
   })
 })

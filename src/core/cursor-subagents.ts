@@ -80,6 +80,8 @@ interface NodeEntry {
 
 export interface CursorSubagentTracker {
   onRaw(agentId: AgentId, nodeId: string | undefined, payload: unknown): void
+  /** The node closed or was recycled mid-Task: no `stop` will come, so drop its entry and tails. */
+  release(nodeId: string): void
 }
 
 export function createCursorSubagentTracker(deps: {
@@ -121,6 +123,12 @@ export function createCursorSubagentTracker(deps: {
           deps.tail.finish(toolUseId)
         }
       }
+    },
+    release(nodeId) {
+      const e = nodes.get(nodeId)
+      if (!e) return
+      nodes.delete(nodeId)
+      for (const toolUseId of e.open) deps.tail.finish(toolUseId)
     }
   }
 }

@@ -28,7 +28,7 @@ import { codexHome } from '../core/usage/codex-usage'
 import { setNodeTranscript } from '../core/context-link'
 import { isSafeLocalTranscriptPath } from '../core/claude-accounts-core'
 import { linkedClaudeConfigDirs } from '../core/claude-config-dir'
-import { isAsyncSubagentLaunch, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { isAsyncSubagentLaunch, isCursorPayload, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { IPC } from '../shared/ipc'
 import type { ServerPlatform } from './platform-server'
@@ -371,6 +371,9 @@ export function wireAgentStatus(
     // Independent of the transcript-tailing below (no path needed), so it runs first.
     recordRawToolEvent(nodeId, payload)
     if (ignoreQuestionHook(nodeId, payload)) return
+    // Cursor runs claude.sh too (Claude settings import), often with a CHILD's chat id: recording it
+    // here re-pointed the node's session, so the parent's cursor tail leaked past pty:destroy.
+    if (isCursorPayload(payload)) return
     const p = payload as {
       hook_event_name?: string
       session_id?: string
@@ -419,6 +422,7 @@ export function wireAgentStatus(
   //  - pty:recycle — the node was moved into a worktree: it stays, but this session is replaced, so
   //    the old session's tails are dead either way (the respawned agent re-registers its own).
   const releaseNodeTails = (nodeId: string): void => {
+    cursorSubagents.release(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Every agent's tail, not just claude's: `nodeContextSession` now holds gemini and codex

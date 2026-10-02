@@ -35,6 +35,7 @@ import { CHAT_PAGE_MAX_BYTES, type ChatTranscriptPage } from '../shared/chat-pag
 import { metaString, summarizeResult } from './transcript-reader'
 import { opencodePageMessages } from './opencode-chat'
 import { isCursorChildToolEvent } from '../shared/agents/normalize'
+import { recordRawToolEvent } from './agent-status-mirror'
 
 type ToolPart = Extract<ChatPart, { kind: 'tool' }>
 type Obj = Record<string, unknown>
@@ -535,6 +536,17 @@ export function applyCursorRaw(
   payload: unknown
 ): void {
   deps.subagents.onRaw('cursor', nodeId, payload)
+  // The phone's "what it is doing now" line, remote nodes included (it needs no file). Translated to
+  // the claude-shaped names `recordRawToolEvent` gates on, as grok's branch does; a child's tool
+  // call is not the parent's activity.
+  if (nodeId && isObj(payload)) {
+    const ev = payload.hook_event_name
+    if (ev === 'preToolUse' && typeof payload.tool_name === 'string' && !isCursorChildToolEvent(payload)) {
+      recordRawToolEvent(nodeId, { hook_event_name: 'PreToolUse', tool_name: payload.tool_name, tool_input: payload.tool_input })
+    } else if (ev === 'stop' || ev === 'sessionEnd') {
+      recordRawToolEvent(nodeId, { hook_event_name: 'Stop' })
+    }
+  }
   if (!nodeId || deps.isRemote(nodeId)) return
   const current = deps.nodeSession.get(nodeId)
   if (current && isCursorChildToolEvent(payload)) return

@@ -1014,6 +1014,16 @@ export function isCursorChildToolEvent(payload: unknown): boolean {
 }
 
 /**
+ * A payload Cursor sent, whichever hook ran it. Cursor also runs nodeterm's `claude.sh` (Claude
+ * settings import, docs/cursor-agent.md §5), so the claude raw listener sees Cursor's envelope too,
+ * often a CHILD's. A real Claude payload carries neither key.
+ */
+export function isCursorPayload(payload: unknown): boolean {
+  const p = (payload ?? {}) as Record<string, unknown>
+  return p.cursor_version !== undefined || p.conversation_id !== undefined
+}
+
+/**
  * PURE. The event name is matched as a closed set of exact strings (rule 7); everything else,
  * including the ~16 events we do not subscribe, is null.
  *

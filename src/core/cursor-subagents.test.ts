@@ -35,7 +35,7 @@ function rig() {
   }
   const t = createCursorSubagentTracker({ tail, emit: (e) => void emitted.push(e), configDir: () => CONFIG })
   const raw = (p: Record<string, unknown>, node = 'n1') => t.onRaw('cursor', node, p)
-  return { tracked, finished, emitted, raw }
+  return { tracked, finished, emitted, raw, release: (node: string) => t.release(node) }
 }
 
 describe('createCursorSubagentTracker over the captured turn', () => {
@@ -65,6 +65,21 @@ describe('createCursorSubagentTracker over the captured turn', () => {
     expect(r.tracked).toEqual([])
     r.raw(STOP)
     expect(r.emitted.map((e) => e.toolUseId)).toEqual([TASK_ID, 'tool_other'])
+  })
+
+  it('release (node closed or recycled mid-Task) finishes the child tail and forgets the node', () => {
+    const r = rig()
+    r.raw(TASK)
+    r.raw(CHILD_POST)
+    r.raw(TASK, 'n2')
+    r.release('n1')
+    expect(r.finished).toEqual([TASK_ID])
+    r.raw(STOP) // the entry is gone: a late stop ends nothing for n1
+    expect(r.emitted).toEqual([])
+    r.release('n1') // idempotent
+    expect(r.finished).toEqual([TASK_ID])
+    r.raw(STOP, 'n2') // other nodes are untouched
+    expect(r.emitted.map((e) => e.nodeId)).toEqual(['n2'])
   })
 
   it('keeps nodes apart and ignores events with no node', () => {

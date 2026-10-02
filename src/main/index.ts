@@ -223,7 +223,7 @@ import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse, codexContextModel } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
 import { codexHome } from '../core/usage/codex-usage'
-import { isAsyncSubagentLaunch, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { isAsyncSubagentLaunch, isCursorPayload, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { agentAccountColor } from '../shared/agents/account-color'
 import {
@@ -3255,6 +3255,9 @@ app.whenReady().then(async () => {
     // tool_name/tool_input, never the transcript path the split routes on.
     recordRawToolEvent(nodeId, payload)
     if (ignoreQuestionHook(nodeId, payload)) return
+    // Cursor runs claude.sh too (Claude settings import), often with a CHILD's chat id: recording it
+    // here re-pointed the node's session, so the parent's cursor tail leaked past pty:destroy.
+    if (isCursorPayload(payload)) return
     const p = payload as {
       hook_event_name?: string
       session_id?: string
@@ -3366,6 +3369,7 @@ app.whenReady().then(async () => {
   //    them under its new session id via the hook events).
   const releaseNodeTails = (nodeId: string): void => {
     remoteCodexContext.release(nodeId)
+    cursorSubagents.release(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Untrack both tails — untracking a non-tracked session is a no-op, so this is safe
