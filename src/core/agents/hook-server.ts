@@ -1,5 +1,6 @@
 import { sessionContextWindow } from '../model-window'
 import { labelHeldForRevision } from './permission-decision'
+import { createCursorApprovalWatch, type CursorApprovalWatch } from './cursor-approval'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomUUID, timingSafeEqual } from 'crypto'
 import { readFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
@@ -402,6 +403,14 @@ export class HookServer {
 
   setListener(cb: (e: NormalizedAgentEvent) => void): void {
     this.listener = cb
+  }
+
+  /** Cursor's approval prompt has no hook, so a pending tool call earns one pane read
+   *  (core/agents/cursor-approval.ts). Both shells pass their pty manager's `captureSession`;
+   *  unset = cursor never shows NEEDS YOU, as before. The synthetic `blocked` rides `listener`. */
+  private cursorWatch: CursorApprovalWatch | null = null
+  setPaneReader(readPane: (nodeId: string) => Promise<string | null>): void {
+    this.cursorWatch = createCursorApprovalWatch({ readPane, emit: (e) => this.listener?.(e) })
   }
 
   // Raw payload listener: receives the parsed (un-normalized) hook JSON. Drives the
@@ -870,6 +879,7 @@ export class HookServer {
           const normalized = raw ? labelHeldForRevision(raw, clientRevision) : raw
           if (normalized && this.listener)
             this.listener({ ...normalized, verified, clientRevision, ...(account ? { account } : {}) })
+          if (agentId === 'cursor') this.cursorWatch?.observe(nodeId, payload, verified)
         }
         res.writeHead(204)
         res.end()
