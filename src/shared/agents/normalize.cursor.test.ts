@@ -19,18 +19,40 @@ const pick = (name: string, ok?: (p: Record<string, unknown>) => boolean) => {
 const env = (payload: Record<string, unknown>): RawHookEnvelope => ({ nodeId: 'n1', agentId: 'cursor', payload })
 const CONV = '5a27c746-14a7-472d-8e3f-7f335a9df0db'
 
+// Interactive TUI capture (2026.10.01): a parent turn with a Task, its child's tool events, stop.
+const sub = JSON.parse(
+  readFileSync(path.join(__dirname, '__fixtures__/cursor/subagent-payloads.json'), 'utf8')
+) as { events: Record<string, unknown>[]; childStoreSubagentInfo: { toolCallId: string } }
+const PARENT = '13993e38-911a-4558-8af0-73729368b113'
+const subPick = (name: string, tool?: string) => {
+  const hit = sub.events.filter((e) => e.hook_event_name === name && (tool ? e.tool_name === tool : true))
+  if (hit.length !== 1) throw new Error(`subagent fixture needs exactly one ${name}/${tool}, got ${hit.length}`)
+  return hit[0]
+}
+
 describe('normalizeCursor over captured cursor-agent payloads', () => {
   it('records conversation_id (== session_id on the wire) as the session id', () => {
-    const e = pick('preToolUse')
+    const e = subPick('beforeSubmitPrompt')
     expect(e.conversation_id).toBe(e.session_id)
-    expect(normalizeCursor(env(e))).toEqual({ nodeId: 'n1', agentId: 'cursor', sessionId: CONV, kind: 'state', state: 'working' })
+    expect(normalizeCursor(env(e))?.sessionId).toBe(PARENT)
     // Either spelling alone is enough.
     expect(normalizeCursor(env({ hook_event_name: 'postToolUse', session_id: 's' }))?.sessionId).toBe('s')
     expect(normalizeCursor(env({ hook_event_name: 'postToolUse' }))?.sessionId).toBeUndefined()
   })
 
-  it('maps tool events to working', () => {
-    expect(normalizeCursor(env(pick('postToolUse')))?.state).toBe('working')
+  it('maps a parent tool event to working (interactive: generation_id is the turn, not the chat)', () => {
+    const e: Record<string, unknown> = { ...subPick('beforeSubmitPrompt'), hook_event_name: 'postToolUse', tool_name: 'Read' }
+    expect(e.generation_id).not.toBe(e.conversation_id)
+    expect(normalizeCursor(env(e))).toEqual({ nodeId: 'n1', agentId: 'cursor', sessionId: PARENT, kind: 'state', state: 'working' })
+  })
+
+  it('a HEADLESS (-p) capture has generation_id == conversation_id, so its tool events read as a child and drive nothing', () => {
+    // Trade-off, documented in docs/cursor-agent.md: a headless run fires no beforeSubmitPrompt
+    // or stop either, so its tool events only ever lit a RUNNING badge nothing could clear.
+    const e = pick('preToolUse')
+    expect(e.generation_id).toBe(e.conversation_id)
+    expect(e.conversation_id).toBe(CONV)
+    expect(normalizeCursor(env(e))).toBeNull()
   })
 
   it('ignores every captured event it does not subscribe to', () => {
@@ -46,9 +68,40 @@ describe('normalizeCursor over captured cursor-agent payloads', () => {
 
   it('a subagent tool call (parent_tool_call_id) drives nothing and records no session', () => {
     // UNMEASURED marker, from the bundle's PreToolUseRequestQuery field 10.
-    const child = { hook_event_name: 'preToolUse', conversation_id: 'child', parent_tool_call_id: 't1' }
+    const child = { hook_event_name: 'preToolUse', conversation_id: 'child', generation_id: 'turn', parent_tool_call_id: 't1' }
     expect(normalizeCursor(env(child))).toBeNull()
     expect(normalizeCursor(env({ ...child, parent_tool_call_id: undefined }))?.state).toBe('working')
+  })
+
+  it('MEASURED child tool events (own chat id as conversation AND generation id) drive nothing', () => {
+    const pre = subPick('preToolUse', 'Read')
+    const post = subPick('postToolUse', 'Read')
+    for (const e of [pre, post]) {
+      expect(e.conversation_id).not.toBe(PARENT)
+      expect(e.parent_tool_call_id).toBeUndefined()
+      expect(normalizeCursor(env(e))).toBeNull()
+    }
+  })
+
+  it('the parent Task preToolUse starts a subagent card keyed by tool_use_id', () => {
+    const task = subPick('preToolUse', 'Task')
+    expect(normalizeCursor(env(task))).toEqual({
+      nodeId: 'n1',
+      agentId: 'cursor',
+      sessionId: PARENT,
+      kind: 'subagent-start',
+      toolUseId: task.tool_use_id,
+      subagentType: 'explore',
+      taskLabel: (task.tool_input as { description: string }).description
+    })
+    // The child's store names the same id: the correlation exists on disk, never in a hook payload.
+    expect(sub.childStoreSubagentInfo.toolCallId).toBe(task.tool_use_id)
+  })
+
+  it('a Task without a tool_use_id, or a postToolUse for Task, stays a plain working event', () => {
+    const task = subPick('preToolUse', 'Task')
+    expect(normalizeCursor(env({ ...task, tool_use_id: undefined }))?.kind).toBe('state')
+    expect(normalizeCursor(env({ ...task, hook_event_name: 'postToolUse' }))?.state).toBe('working')
   })
 
   it('beforeSubmitPrompt starts a turn (built from the bundle schema, never captured)', () => {
@@ -76,7 +129,7 @@ describe('normalizeCursor over captured cursor-agent payloads', () => {
   })
 
   it('is what the hook server dispatches for the cursor route', () => {
-    expect(normalizeFor('cursor', env(pick('preToolUse')))?.state).toBe('working')
+    expect(normalizeFor('cursor', env(subPick('stop')))?.state).toBe('done')
   })
 
   it('cross-fire is inert: nodeterm\'s claude hook also runs under cursor and finds nothing it knows', () => {
