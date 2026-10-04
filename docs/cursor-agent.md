@@ -84,8 +84,8 @@ recorded as claude's `PreToolUse` (tool name and input, so `Shell` reads "Runnin
 
 **No NEEDS YOU from the normalizer.** Measured: the `AskQuestion` tool fires no tool hook (headless
 and TUI); Cursor's own approval prompt has no hook either. Guessing one from events would strobe
-(rule 7). The approval prompt is detected from the pane instead: see "NEEDS YOU, SSH hooks and lost
-stop" below.
+(rule 7). The approval prompt and the AskQuestion box are detected from the pane instead: see
+"NEEDS YOU, SSH hooks and lost stop" below.
 
 ## 5. Cross-fire with nodeterm's claude hook (measured)
 
@@ -133,7 +133,7 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 3. Bisect the 18-event stream failure (add events back one at a time in a headless run).
 4. ~~Subagent behaviour~~ measured on 2026.10.01, see "Orchestration parity".
 5. Answered: `/quit` fires `sessionEnd`; cursor is in `SESSION_END_CAPABLE` ("Session continuity").
-6. Answered: no hook for either (measured in the TUI); approval is read from the pane, AskQuestion is not covered.
+6. Answered: no hook for either (measured in the TUI); both the approval prompt and the AskQuestion box are read from the pane.
 7. Hook latency inside a node (script backgrounds the POST; expected small).
 8. Linux and Windows: hooks.json location, `cursor-agent` install dir.
 
@@ -347,7 +347,7 @@ hooks logger, 4 model runs (composer-2.5).
 | MCP tool | `preToolUse` (`MCP:ping`), `beforeMCPExecution`, then silence | `Run this MCP tool?` / `→ Run (once) (y)` ... `Skip (esc or n)` |
 | approve (y) or skip (n) | `postToolUse` for the same `tool_use_id` (skip too), then `stop` | dialog gone |
 | file write (default mode) | no dialog: auto-approved | n/a |
-| AskQuestion | NO tool hook at all; Esc fires only `stop` | `Clarifying Questions` box |
+| AskQuestion (measured again 2026-10-04, 6 runs) | NO tool hook on show, on answer (Enter) or on skip (Esc): after `beforeSubmitPrompt` only `afterAgentThought` (not subscribed) until the turn's `stop`, which came 20 to 55 s after the answer, status `error` in every run (the pane printed `WritableIterable is closed`) | bordered box at the bottom of the pane: a title (the model's own, e.g. `Color preference`, or the default `Clarifying Questions`) / `Question 1 of N` / `1. <question>` / `› [ ] Red` ... `[ ] Other: (type to answer)` / footer `↑/↓ option · ←/→ question · Space select · Enter next/submit · Esc to skip` (wraps onto two rows at 60 columns). Answered or skipped, it stays as a summary (`AskQuestion <title> (1)` and `[x]`/`[ ]` rows) with no footer |
 
 Rule: a cursor `preToolUse` whose `tool_use_id` has no `postToolUse`/`postToolUseFailure` after
 1.5 s gets a pane read (`ptyManager.captureSession`, bounded by `probeWithin`), retried at 4 s and
@@ -391,13 +391,29 @@ box stays in the transcript, and the build's own `stop` read it 30 lines up (mea
 `subagent-start`, not `working`, so the watch emits `working` itself) and cancels the reads. Cost:
 up to three pane reads after every completed turn, plan mode or not.
 
+**AskQuestion.** The box has no hook (table above), so the watch hangs the same bounded reads on a
+quiet stretch of a working turn: `beforeSubmitPrompt` and every tool post (a child's too, since the
+parent's `Task` never posts and the parent may ask once its child is done) arm them, a `preToolUse`
+cancels them (a tool is running), `stop`/`sessionEnd`/release drop them. `cursorQuestionIn` matches
+the box by structure, not by title (the title is the model's): the footer ending `Esc to skip` must be
+the last row above the bottom border, with a `Question N of M` row and an option row (`› [ ] ...`,
+`[x] ...`) above it, so the answered summary left in the transcript never matches (measured: the next
+turn's first read saw it and did not). A match emits `waiting`, what Claude's AskUserQuestion
+normalizes to (NEEDS YOU, a question card on the phone, chat send and agent messaging refused). The
+next parent tool event replaces it (`working`; the watch emits it itself before a `Task`) and so does
+`stop` (`done`, `errored` for the measured `error` status). Live replay (real hook log, real tmux
+pane, `createCursorApprovalWatch`): the 1.5 s read missed the box both times and the 4 s read caught
+it. Cost: up to three pane reads per quiet stretch of 1.5 s or more, on any turn.
+
 | Surface | Desktop | Server Edition | Mobile | SSH-remote node |
 |---|---|---|---|---|
-| NEEDS YOU on approval | yes (`hookServer.setPaneReader` in main) | yes (same call in server) | yes (mirror is agent-agnostic) | yes: `captureSession` reads the remote tmux over the ControlMaster (one ssh child per pending call) |
+| NEEDS YOU on approval and on the AskQuestion box | yes (`hookServer.setPaneReader` in main) | yes (same call in server) | yes (mirror is agent-agnostic) | yes: `captureSession` reads the remote tmux over the ControlMaster (one ssh child per read) |
 | Kanban card, chips, card modal | `cardBadge` / `chatSendRefusal` read `blocked` for every agent | same | N/A | same |
 | Chat send / agent messaging refuse while blocked | `chatSendRefusal` = `dialog`; `decideDelivery` = `targetBusy` | same | same | same |
 
-Not covered: AskQuestion (no hook to hang a read on; the node shows RUNNING while it waits). The
+Limits: an AskQuestion box first drawn more than 10 s after the last hook event (the last read of
+the stretch) keeps the node on RUNNING; after the answer the node stays NEEDS YOU until the turn's
+next hook, measured 20 to 55 s later (`stop`), because nothing marks the answer itself. The
 headings other than shell and MCP are bundle-read, not seen in a pane. Unmeasured: `p`/Esc on the plan
 prompt (no hook expected; the node stays NEEDS YOU until the next prompt's `beforeSubmitPrompt`).
 
@@ -430,6 +446,8 @@ long); its clearing event is the `postToolUse`/`stop` of the same turn.
 4. A very long command preview pushing the heading above the 30-line window (would degrade to RUNNING).
 5. Two parallel tool calls with one approval: the other call's `postToolUse` returns the badge to
    RUNNING while the dialog is still up (no re-read).
+6. A cursor node on the real canvas: NEEDS YOU and a question card on the phone for the AskQuestion
+   box; DONE after Esc or after the answer's `stop`.
 
 ## Orchestration parity (canvas control, subagents, rename, loop)
 

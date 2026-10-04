@@ -10,9 +10,9 @@
  * pane read at each of CURSOR_APPROVAL_READS_MS (the same `captureSession` the context link uses),
  * stopping at the first that shows Cursor's own approval dialog: the node goes `blocked`. The next
  * hook event (postToolUse on approve or skip, stop on Esc) normalizes to `working`/`done` and
- * replaces it. Nothing polls open-endedly: no pending tool = no timer and no read; at most
- * CURSOR_APPROVAL_READS_MS.length reads per tool call and `blocked` is emitted once, so a
- * long-running approved command never strobes (rule 7).
+ * replaces it. Nothing polls open-endedly: no pending tool and no quiet turn = no timer and no
+ * read; at most CURSOR_APPROVAL_READS_MS.length reads per tool call (and per quiet stretch, below)
+ * and `blocked` is emitted once, so a long-running approved command never strobes (rule 7).
  *
  * Why more than one read: MEASURED in the dev app (2026-10-02), a single read 1.5 s after
  * `preToolUse` found no dialog yet and the node sat on RUNNING while the dialog waited ~30 s; the
@@ -26,8 +26,11 @@
  * the `working` that clears it, since normalizeCursor drops child events) carries the PARENT's chat id.
  * A parent `stop` with status `completed` arms the same reads for plan mode's `Ready to build?`.
  *
- * NOT covered: the AskQuestion form ("Clarifying Questions"). Measured: it fires no tool hook at
- * all (no preToolUse, only `stop` on Esc), so there is no pending call to hang a read on.
+ * The AskQuestion form fires no tool hook at all (measured: show, answer and Esc; the turn's next
+ * hook is its `stop`). So a turn that went quiet (after `beforeSubmitPrompt` or a tool post) arms
+ * the same reads for the question box, and a match emits `waiting`, as Claude's AskUserQuestion
+ * does. A `preToolUse` cancels them (a tool is running); the next parent tool event or `stop`
+ * replaces the `waiting`.
  */
 import { isCursorChildToolEvent, type NormalizedAgentEvent } from '../../shared/agents/normalize'
 import { probeWithin } from './pane-probe'
@@ -107,6 +110,32 @@ export function cursorPlanPromptIn(text: string): boolean {
   return tail.some((l) => l.endsWith('(b)')) && tail.every((l) => /\([^()]*\)$/.test(l) || BORDER.test(l))
 }
 
+/**
+ * The AskQuestion box (bundle: `ask-question-tool-ui.tsx`). Its title is the model's own (measured
+ * `Color preference`, `Quick preferences`) or the default `Clarifying Questions`, so it is not
+ * matched. Rows as `bare` leaves them: `Question 1 of 2`, an option `› [ ] Red` / `[x] Blue`, and the
+ * fixed footer, which wraps on a narrow pane (measured at 60 columns: `... · Enter` / `next/submit ·
+ * Esc to skip`).
+ */
+const QUESTION_ROW = /^Question \d+ of \d+$/
+const OPTION_ROW = /^(› )?\[[ x]\] /
+const QUESTION_FOOTER_END = 'Esc to skip'
+
+/**
+ * PURE. Does this pane capture END in an AskQuestion box? The answered box stays in the transcript
+ * as a summary (`AskQuestion <title> (1)` and `[x]` rows) without the footer, so the footer must be
+ * the last row above the bottom border, with a `Question N of M` row and an option row above it.
+ */
+export function cursorQuestionIn(text: string): boolean {
+  const lines = text.split('\n').map(bare).filter(Boolean).slice(-TAIL_LINES)
+  let end = lines.length
+  while (end > 0 && BORDER.test(lines[end - 1])) end--
+  if (end === 0 || !lines[end - 1].endsWith(QUESTION_FOOTER_END)) return false
+  let at = end - 1
+  while (at >= 0 && !QUESTION_ROW.test(lines[at])) at--
+  return at >= 0 && lines.slice(at + 1, end).some((l) => OPTION_ROW.test(l))
+}
+
 export interface CursorApprovalWatchDeps {
   /** The node's pane text ('' or null = cannot see it). */
   readPane: (nodeId: string) => Promise<string | null>
@@ -127,6 +156,8 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v 
 
 /** The pending key of the one plan-prompt watch per node (a tool_use_id is never empty). */
 const PLAN = ''
+/** The pending key of the one question-box watch per node (no measured tool_use_id has a NUL). */
+const QUESTION = '\0question'
 
 interface Pending {
   /** The next read, null while a read is in flight or once the reads are spent. */
@@ -178,7 +209,7 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
     w.broken = false
   }
 
-  const emit = (nodeId: string, w: NodeWatch, state: 'blocked' | 'working', verified: boolean): void => {
+  const emit = (nodeId: string, w: NodeWatch, state: 'blocked' | 'waiting' | 'working', verified: boolean): void => {
     const sessionId = w.sessionId
     deps.emit({ nodeId, agentId: 'cursor', ...(sessionId ? { sessionId } : {}), kind: 'state', state, verified })
   }
@@ -209,9 +240,10 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
       }
       return
     }
-    if (id === PLAN ? cursorPlanPromptIn(text) : cursorApprovalIn(text)) {
+    const seen = id === PLAN ? cursorPlanPromptIn : id === QUESTION ? cursorQuestionIn : cursorApprovalIn
+    if (seen(text)) {
       p.blocked = true
-      if (!w.blocked) emit(nodeId, w, 'blocked', verified)
+      if (!w.blocked) emit(nodeId, w, id === QUESTION ? 'waiting' : 'blocked', verified)
       w.blocked = true
       return // the call stays pending only so a post can still end it
     }
@@ -254,6 +286,7 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
       const id = str(payload.tool_use_id)
       if (ev === 'preToolUse') {
         drop(w, PLAN) // the agent is building after all
+        drop(w, QUESTION) // a tool is running: the question box is not up
         if (!child && w.blocked) {
           // A parent tool call means the node is working. A plain call already normalizes to
           // `working`, but a `Task` normalizes to `subagent-start` and its child's events to
@@ -270,16 +303,21 @@ export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): Cursor
         drop(w, id)
         if (!child) {
           w.blocked = false // normalizes to `working`, which already replaced any block
-          return
+        } else if (p?.blocked && ![...w.calls.values()].some((q) => q.blocked)) {
+          // A child's post normalizes to nothing, so the block this watch raised would stick.
+          w.blocked = false
+          emit(nodeId, w, 'working', verified)
         }
-        if (!p?.blocked || [...w.calls.values()].some((q) => q.blocked)) return
-        // A child's post normalizes to nothing, so the block this watch raised would stick.
-        w.blocked = false
-        emit(nodeId, w, 'working', verified)
+        // Quiet again: the model may ask next. A child's post counts too: the parent's `Task`
+        // never posts, and the parent may ask once its child is done.
+        if (!w.blocked) arm(nodeId, w, QUESTION, false, verified)
       } else if (ev === 'stop' || ev === 'beforeSubmitPrompt') {
         dropAll(w)
         // A completed turn may end on plan mode's "Ready to build?": the same bounded reads.
         if (ev === 'stop' && payload.status === 'completed') arm(nodeId, w, PLAN, false, verified)
+        // A new turn may open on a question: the same bounded reads.
+        // note: fixed schedule; a box first drawn after the last read of a quiet stretch stays RUNNING.
+        if (ev === 'beforeSubmitPrompt') arm(nodeId, w, QUESTION, false, verified)
       }
     },
     release(nodeId) {

@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   createCursorApprovalWatch,
   cursorApprovalIn,
   cursorPlanPromptIn,
+  cursorQuestionIn,
   CURSOR_APPROVAL_DELAY_MS,
   CURSOR_APPROVAL_READS_MS
 } from './cursor-approval'
@@ -97,14 +100,15 @@ describe('createCursorApprovalWatch', () => {
     expect(readPane).toHaveBeenCalledTimes(1) // never polls
   })
 
-  it('a tool that posts in time costs nothing', async () => {
+  it('a tool that posts in time gets no approval read; only the quiet stretch after it is read', async () => {
     const { readPane, emitted, post } = setup()
     post('preToolUse', { tool_use_id: 't1' })
     post('postToolUse', { tool_use_id: 't1' })
     post('preToolUse', { tool_use_id: 't2' })
     post('postToolUseFailure', { tool_use_id: 't2' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).not.toHaveBeenCalled()
+    // The question-box reads after the last post; the shell dialog text is not a question box.
+    expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
     expect(emitted).toEqual([])
   })
 
@@ -114,6 +118,7 @@ describe('createCursorApprovalWatch', () => {
     post('stop')
     post('preToolUse', { tool_use_id: 't2' })
     post('beforeSubmitPrompt')
+    post('stop') // the question-box reads the prompt armed end with the turn
     await vi.advanceTimersByTimeAsync(60_000)
     expect(readPane).not.toHaveBeenCalled()
   })
@@ -175,7 +180,7 @@ describe('createCursorApprovalWatch', () => {
     post('beforeSubmitPrompt')
     post('preToolUse', { tool_use_id: 'task1', tool_name: 'Task', generation_id: 'g1' })
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(readPane).not.toHaveBeenCalled()
+    expect(readPane).not.toHaveBeenCalled() // the Task cancelled the prompt's question-box reads
     post('preToolUse', { tool_use_id: 'p1', tool_name: 'Shell', generation_id: 'g1' })
     post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
     await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
@@ -376,6 +381,7 @@ describe('createCursorApprovalWatch', () => {
     post('stop', { status: 'completed' })
     post('preToolUse', { tool_use_id: 't1' })
     post('postToolUse', { tool_use_id: 't1' })
+    post('stop', { status: 'aborted' }) // ends the question-box reads the post armed
     await vi.advanceTimersByTimeAsync(60_000)
     expect(readPane).not.toHaveBeenCalled()
   })
@@ -386,6 +392,142 @@ describe('createCursorApprovalWatch', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
     expect(emitted).toEqual([])
+  })
+})
+
+// Live captures (cursor-agent 2026.10.01-e373342, tmux capture-pane, 2026-10-04): the AskQuestion box
+// as drawn, answered (Enter) and skipped (Esc), plus the hook payloads nodeterm subscribes to.
+interface AskFixture {
+  panes: Record<string, string[]>
+  hooks: Record<string, Record<string, unknown>[]>
+}
+const ASK_FX = JSON.parse(
+  readFileSync(join(__dirname, '../../shared/agents/__fixtures__/cursor/ask-question.json'), 'utf8')
+) as AskFixture
+const pane = (name: string): string => `${ASK_FX.panes[name].join('\n')}\n`
+const SHOWN = pane('shownDefaultTitle')
+
+describe('cursorQuestionIn', () => {
+  it('matches the measured boxes: default title, a model title with a wrapped footer, question 2 of 2', () => {
+    expect(cursorQuestionIn(SHOWN)).toBe(true)
+    expect(cursorQuestionIn(pane('shownWrappedFooter'))).toBe(true)
+    expect(cursorQuestionIn(pane('shownSecondOfTwoSelected'))).toBe(true)
+    expect(cursorQuestionIn(ASK)).toBe(true)
+  })
+  it('refuses the box left in the transcript after Enter or Esc', () => {
+    expect(cursorQuestionIn(pane('answered'))).toBe(false)
+    expect(cursorQuestionIn(pane('answeredReconnecting'))).toBe(false)
+    expect(cursorQuestionIn(pane('skipped'))).toBe(false)
+  })
+  it('refuses the other dialogs, a running tool, and a box that is not the bottom of the pane', () => {
+    for (const t of [SHELL, MCP, RUNNING, '']) expect(cursorQuestionIn(t)).toBe(false)
+    expect(cursorQuestionIn(`${SHOWN}  You chose red.\n  → Add a follow-up\n`)).toBe(false)
+    // The footer alone, or with no option row under the question line, is not the box.
+    expect(cursorQuestionIn(' │ ↑/↓ option · Space select · Enter next/submit · Esc to skip │\n')).toBe(false)
+    expect(cursorQuestionIn(' │ Question 1 of 1 │\n │ 1. Red? │\n │ Enter next/submit · Esc to skip │\n')).toBe(false)
+  })
+  it('the approval and plan tests still refuse the box', () => {
+    expect(cursorApprovalIn(SHOWN)).toBe(false)
+    expect(cursorPlanPromptIn(SHOWN)).toBe(false)
+  })
+})
+
+describe('the AskQuestion watch', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const setup = (read: () => string | null) => {
+    const readPane = vi.fn(async () => read())
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e) })
+    const post = (hook_event_name: string, extra: Record<string, unknown> = {}) =>
+      watch.observe('n1', { hook_event_name, conversation_id: 'c1', ...extra }, true)
+    return { readPane, emitted, post, watch }
+  }
+  const WAITING = { nodeId: 'n1', agentId: 'cursor', sessionId: 'c1', kind: 'state', state: 'waiting', verified: true }
+
+  it('the measured Esc run: prompt, box, Esc -> waiting once, and stop ends the reads', async () => {
+    const { readPane, emitted, watch } = setup(() => SHOWN)
+    const [first, second, stop] = ASK_FX.hooks.skippedEsc
+    expect([first, second, stop].map((p) => p.hook_event_name)).toEqual(['beforeSubmitPrompt', 'sessionStart', 'stop'])
+    watch.observe('n1', first, true)
+    watch.observe('n1', second, true)
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted).toEqual([{ ...WAITING, sessionId: first.conversation_id }])
+    watch.observe('n1', stop, true) // normalizes to done (status error): replaces the waiting
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(1)
+    expect(emitted).toHaveLength(1)
+  })
+
+  it('a box drawn after the first read is caught by a later one; an ordinary turn reads a bounded number of times', async () => {
+    let n = 0
+    const { readPane, emitted, post } = setup(() => (++n === 1 ? RUNNING : SHOWN))
+    post('beforeSubmitPrompt')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readPane).toHaveBeenCalledTimes(2)
+    expect(emitted).toEqual([WAITING])
+    const quiet = setup(() => RUNNING)
+    quiet.post('beforeSubmitPrompt')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(quiet.readPane).toHaveBeenCalledTimes(CURSOR_APPROVAL_READS_MS.length)
+    expect(quiet.emitted).toEqual([])
+  })
+
+  it('the answered box in scrollback never reads as a question', async () => {
+    const { emitted, post } = setup(() => pane('answered'))
+    post('beforeSubmitPrompt')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(emitted).toEqual([])
+  })
+
+  it('a running tool cancels the reads: its own approval reads never take the box for a question', async () => {
+    const { emitted, post } = setup(() => SHOWN)
+    post('beforeSubmitPrompt')
+    post('preToolUse', { tool_use_id: 't1', tool_name: 'Shell' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(emitted).toEqual([])
+  })
+
+  it('a tool after the answer clears the waiting; the quiet stretch after its post can catch a second box', async () => {
+    let shown = true
+    const { emitted, post } = setup(() => (shown ? SHOWN : RUNNING))
+    post('beforeSubmitPrompt')
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    shown = false
+    post('preToolUse', { tool_use_id: 't1', tool_name: 'Shell' }) // normalizes to working too
+    expect(emitted.map((e) => e.state)).toEqual(['waiting', 'working'])
+    post('postToolUse', { tool_use_id: 't1', tool_name: 'Shell' })
+    shown = true
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted.map((e) => e.state)).toEqual(['waiting', 'working', 'waiting'])
+  })
+
+  it("a child's post re-arms the reads: the parent may ask once its subagent is done", async () => {
+    const { emitted, post } = setup(() => SHOWN)
+    post('beforeSubmitPrompt', { generation_id: 'g1' })
+    post('preToolUse', { tool_use_id: 'task1', tool_name: 'Task', generation_id: 'g1' })
+    post('preToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    post('postToolUse', { tool_use_id: 'c1t', conversation_id: 'child-1', generation_id: 'child-1' })
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    expect(emitted).toEqual([WAITING]) // the PARENT's chat id, never the child's
+  })
+
+  it('release during the read emits nothing; an unreadable pane stops the reads until the next turn', async () => {
+    let resolve: (s: string) => void = () => {}
+    const readPane = vi.fn(() => new Promise<string>((r) => (resolve = r)))
+    const emitted: NormalizedAgentEvent[] = []
+    const watch = createCursorApprovalWatch({ readPane, emit: (e) => emitted.push(e) })
+    watch.observe('n1', { hook_event_name: 'beforeSubmitPrompt', conversation_id: 'c1' }, true)
+    await vi.advanceTimersByTimeAsync(CURSOR_APPROVAL_DELAY_MS)
+    watch.release('n1')
+    resolve(SHOWN)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(emitted).toEqual([])
+    const dead = setup(() => null)
+    dead.post('beforeSubmitPrompt')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(dead.readPane).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -405,6 +547,16 @@ describe('a cursor blocked through the mirror and the messaging gate', () => {
     expect(o).toEqual({ kind: 'targetBusy', state: 'blocked' })
     recordAgentEvent({ ...base, state: 'working' }) // postToolUse after y / n
     expect(mirrorEntry('n9')?.state).toBe('working')
+  })
+
+  it('a question waiting holds until stop, and messaging refuses it meanwhile', () => {
+    const base = { nodeId: 'n7', agentId: 'cursor', sessionId: 'c3', kind: 'state' as const, verified: true }
+    recordAgentEvent({ ...base, state: 'working', newTurn: true })
+    expect(recordAgentEvent({ ...base, state: 'waiting' }).state).toBe('waiting') // the watch's event
+    const o = decideDelivery({ targetLive: true, pane: 'agent', target: mirrorEntry('n7'), tokenFilePresent: true, pasteAware: true })
+    expect(o).toEqual({ kind: 'targetBusy', state: 'waiting' })
+    recordAgentEvent({ ...base, state: 'done', errored: true }) // stop after Esc (measured: status error)
+    expect(mirrorEntry('n7')?.state).toBe('done')
   })
 
   it('a lost stop (network reconnect) is caught by the existing WORKING_STALE_MS sweep', () => {

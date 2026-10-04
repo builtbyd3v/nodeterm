@@ -1161,7 +1161,8 @@ export function isCursorPayload(payload: unknown): boolean {
  *
  * NEEDS YOU is deliberately absent HERE: the AskQuestion tool fires no tool hook and Cursor's own
  * approval prompt has none either (docs/cursor-agent.md §4). The hook server adds a `blocked` from
- * up to three pane reads of a still-pending tool call instead (core/agents/cursor-approval.ts).
+ * up to three pane reads of a still-pending tool call, and a `waiting` from the same reads of a quiet
+ * turn that ends on the AskQuestion box, instead (core/agents/cursor-approval.ts).
  *
  * `sessionId` is `conversation_id`, falling back to `session_id`: the resume feature keys on it.
  */
