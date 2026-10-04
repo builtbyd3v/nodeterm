@@ -873,6 +873,8 @@ export class PtyManager {
   /** persistKey -> the agent id its pane was created for (this app run). `sendText` asks it so an
    *  agent in SEPARATE_SUBMIT_AGENTS gets its Enter as a second write (see `sendText`). */
   private agentByKey = new Map<string, string>()
+  /** persistKey -> the tail of its separate-submit sends (see `sendText`), dropped once drained. */
+  private submitChain = new Map<string, Promise<unknown>>()
   /** persistKey (node id) → live sessionId. The index that makes `pty:create` idempotent:
    *  a second client asking for the same node subscribes to the running session. */
   private byPersistKey = new Map<string, string>()
@@ -4476,6 +4478,24 @@ export class PtyManager {
    * transport runs it.
    */
   async sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult> {
+    const agent = this.agentByKey.get(persistKey)
+    if (!agent || !submitsSeparately(capabilityAgentId(agent as AgentId))) return this.sendTextNow(persistKey, text, opts)
+    // A separate-submit write is two tmux calls with a gap between them, and the chat composer, the
+    // phone, canvas `write` and triggers can all send at once: two overlapping sends interleaved as
+    // paste, paste, Enter, Enter (review 2026-10-03), merging the prompts. One transaction at a time
+    // per node; a failed one does not stall the next.
+    const run = (this.submitChain.get(persistKey) ?? Promise.resolve()).then(() =>
+      this.sendTextNow(persistKey, text, opts)
+    )
+    const tail = run.catch(() => undefined)
+    this.submitChain.set(persistKey, tail)
+    void tail.then(() => {
+      if (this.submitChain.get(persistKey) === tail) this.submitChain.delete(persistKey)
+    })
+    return run
+  }
+
+  private async sendTextNow(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult> {
     const enter = opts?.enter ?? true
     const live = this.liveSessionForPersistKey(persistKey)
     // An agent whose TUI ignores an Enter bundled into the same tmux invocation as a bracketed paste
@@ -5436,8 +5456,11 @@ export class PtyManager {
     // `tombstones`); a RECYCLE explicitly forgets, because the node is not going anywhere and its
     // replacement session must be spawnable. Recorded even when no live session exists in this
     // process: the node may be deleted from a canvas whose terminal was never opened here.
-    if (intent === 'delete') this.tombstone(persistKey, clientId)
-    else this.tombstones.delete(persistKey)
+    if (intent === 'delete') {
+      this.tombstone(persistKey, clientId)
+      // The node is gone; a recycle keeps it, and its respawn's create() re-records the agent.
+      this.agentByKey.delete(persistKey)
+    } else this.tombstones.delete(persistKey)
     if (dyingId && dying) {
       this.byPersistKey.delete(persistKey)
       dying.indexKey = undefined

@@ -483,8 +483,8 @@ and lands in the store meta `name` the read leg (`TITLE_READ_CAPABLE`) already r
 write holds. MEASURED: nodeterm's one-shot `sendText` (bracketed paste and Enter in ONE tmux
 invocation) left `/rename x` sitting unsubmitted in the composer; the same paste followed by a bare
 Enter as a SECOND invocation renamed the chat (meta `name` changed). Hence `SEPARATE_SUBMIT_AGENTS`
-(`submitsSeparately`) and the two-step push in `pushSessionRename` (paste, then `sendText('')` =
-bare Enter, only after the paste succeeded). The built-in `rename-chat` skill is model-driven
+(`submitsSeparately`): `PtyManager.sendText` pastes, then sends a bare Enter only after the paste
+succeeded, one transaction at a time per node. `pushSessionRename` sends one ordinary line. The built-in `rename-chat` skill is model-driven
 (`cursor-app-control.rename_chat`, not in the CLI) and is not used.
 
 ### Loop (`RECURRING_CAPABLE`): not joined

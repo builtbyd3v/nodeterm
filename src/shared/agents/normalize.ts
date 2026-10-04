@@ -1013,6 +1013,12 @@ export function isCursorChildToolEvent(payload: unknown): boolean {
   return typeof p.conversation_id === 'string' && !!p.conversation_id && p.generation_id === p.conversation_id
 }
 
+/** A background agent's own lifecycle event (`is_background_agent: true`): never the node's. The
+ *  normalizer, the subagent tracker and the raw step all drop it with this one test. */
+export function isCursorBackgroundEvent(payload: unknown): boolean {
+  return ((payload ?? {}) as CursorPayload).is_background_agent === true
+}
+
 /**
  * A payload Cursor sent, whichever hook ran it. Cursor also runs nodeterm's `claude.sh` (Claude
  * settings import, docs/cursor-agent.md §5), so the claude raw listener sees Cursor's envelope too,
@@ -1084,7 +1090,7 @@ export function normalizeCursor(env: RawHookEnvelope): NormalizedAgentEvent | nu
   }
   // Orderly `/quit` (measured: reason "completed"). A background agent's own end is not this node's.
   if (ev === 'sessionEnd') {
-    if (p.is_background_agent === true) return null
+    if (isCursorBackgroundEvent(p)) return null
     return { ...base, kind: 'session', sessionPhase: 'end' }
   }
   return null

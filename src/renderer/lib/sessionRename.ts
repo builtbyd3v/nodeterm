@@ -6,7 +6,6 @@ import type { TextDeliveryResult } from '@shared/text-delivery'
 // not a nicety. Lives outside Canvas.tsx for that reason alone.
 import { isShellCommand } from '../terminal/agent-restart'
 import { oneLine } from '@shared/one-line'
-import { submitsSeparately, type AgentId } from '@shared/agents/config'
 
 /** How long to wait for an agent CLI to take its pane before giving up on the mirror. */
 export const RENAME_PUSH_ATTEMPTS = 12
@@ -49,7 +48,7 @@ export function sessionNameUnchanged(next: string, current: string): boolean {
 
 export interface RenamePushIo {
   paneCommand(persistKey: string): Promise<string | null>
-  sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult>
+  sendText(persistKey: string, text: string): Promise<TextDeliveryResult>
   /** Injected so tests don't wait in real time. */
   sleep?(ms: number): Promise<void>
 }
@@ -78,18 +77,12 @@ export interface RenamePushIo {
  *
  * Returns false both for "nothing to push" and for "the agent never took the pane"; the callers
  * are one-way mirrors and act on neither.
- *
- * `agentId` is REQUIRED for the same reason `current` is: an agent in SEPARATE_SUBMIT_AGENTS
- * (cursor) ignores an Enter riding the paste, so its line is pasted bare and then submitted by a
- * second, empty `sendText` (a bare Enter). The Enter is sent only when the paste reported success,
- * so a failed paste can never submit whatever the human had composed.
  */
 export async function pushSessionRename(
   io: RenamePushIo,
   nodeId: string,
   name: string,
-  current: string,
-  agentId: AgentId
+  current: string
 ): Promise<boolean> {
   if (sessionNameUnchanged(name, current)) return false
   const sleep = io.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
@@ -97,10 +90,7 @@ export async function pushSessionRename(
     if (i > 0) await sleep(RENAME_PUSH_RETRY_MS)
     const pane = await io.paneCommand(nodeId).catch(() => null)
     if (pane && !isShellCommand(pane)) {
-      if (!submitsSeparately(agentId)) return reportTextDelivery(await io.sendText(nodeId, renameCommand(name)))
-      const pasted = await io.sendText(nodeId, renameCommand(name), { enter: false })
-      if (pasted !== true) return reportTextDelivery(pasted)
-      return reportTextDelivery(await io.sendText(nodeId, '', { enter: true }))
+      return reportTextDelivery(await io.sendText(nodeId, renameCommand(name)))
     }
   }
   return false

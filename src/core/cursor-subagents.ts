@@ -19,7 +19,7 @@
 // One definition for both shells (CLAUDE.md rule 10): src/main/index.ts and
 // src/server/agent-status.ts each call `onRaw` from their raw hook listener.
 import path from 'node:path'
-import { isCursorChildToolEvent, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { isCursorBackgroundEvent, isCursorChildToolEvent, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import type { AgentId } from '../shared/agents/config'
 import type { SubagentTail } from './subagent-tail'
 import { CURSOR_CHAT_ID_RE, cursorConfigDir, cursorToolArg, cursorUserText } from './cursor-chat'
@@ -115,8 +115,11 @@ export function createCursorSubagentTracker(deps: {
         return
       }
       if (ev === 'stop' || ev === 'sessionEnd') {
+        // A background agent's end, or a claimed child's own, is not the parent's: it must not end
+        // the parent's cards or stand in as its session id (normalizeCursor drops it the same way).
+        if (isCursorBackgroundEvent(payload)) return
         const e = nodes.get(nodeId)
-        if (!e) return
+        if (!e || (conv && e.children.has(conv))) return
         nodes.delete(nodeId)
         for (const toolUseId of e.open) {
           deps.emit({ nodeId, agentId, sessionId: conv, kind: 'subagent-end', toolUseId })

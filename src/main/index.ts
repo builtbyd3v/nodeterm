@@ -216,7 +216,7 @@ import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
-import { applyCursorRaw, cursorContextParse, readCursorContextSource } from '../core/cursor-chat'
+import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
@@ -3370,6 +3370,7 @@ app.whenReady().then(async () => {
   const releaseNodeTails = (nodeId: string): void => {
     remoteCodexContext.release(nodeId)
     cursorSubagents.release(nodeId)
+    releaseCursorRaw(nodeId)
     hookServer.releaseCursorNode(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {

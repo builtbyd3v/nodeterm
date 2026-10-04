@@ -34,7 +34,7 @@ import { CHAT_TOOL_ARG_MAX } from '../shared/chat-command'
 import { CHAT_PAGE_MAX_BYTES, type ChatTranscriptPage } from '../shared/chat-page'
 import { metaString, summarizeResult } from './transcript-reader'
 import { opencodePageMessages } from './opencode-chat'
-import { isCursorChildToolEvent } from '../shared/agents/normalize'
+import { isCursorBackgroundEvent, isCursorChildToolEvent } from '../shared/agents/normalize'
 import { recordRawToolEvent } from './agent-status-mirror'
 
 type ToolPart = Extract<ChatPart, { kind: 'tool' }>
@@ -497,15 +497,26 @@ export function cursorContextParse(text: string | string[]): { used: number; win
  */
 export async function trackCursorContext(
   tail: { track(id: string, path: string): void; pathFor(id: string): string | undefined },
-  payload: unknown
+  payload: unknown,
+  live: () => boolean = () => true
 ): Promise<string | undefined> {
   const p = isObj(payload) ? payload : {}
   const id = typeof p.conversation_id === 'string' ? p.conversation_id : typeof p.session_id === 'string' ? p.session_id : undefined
   if (!id || tail.pathFor(id)) return id
   const cwd = Array.isArray(p.workspace_roots) && typeof p.workspace_roots[0] === 'string' ? p.workspace_roots[0] : undefined
   const path = await locateCursorChat(id, cwd)
-  if (path) tail.track(id, path)
+  if (path && live()) tail.track(id, path)
   return id
+}
+
+/** nodeId -> a token for its current life. `releaseCursorRaw` drops it, so a store lookup that was
+ *  already in flight when the node was destroyed or recycled finds a different token when it lands
+ *  and tracks nothing (it used to restart a 1 Hz poll on the old store, review 2026-10-03). */
+const nodeEpoch = new Map<string, object>()
+
+/** Both shells' `releaseNodeTails` (pty:destroy / pty:recycle): fence `applyCursorRaw`'s pending lookups. */
+export function releaseCursorRaw(nodeId: string): void {
+  nodeEpoch.delete(nodeId)
 }
 
 /**
@@ -536,6 +547,8 @@ export function applyCursorRaw(
   payload: unknown
 ): void {
   deps.subagents.onRaw('cursor', nodeId, payload)
+  // A background agent's lifecycle event is not this node's: no Stop activity, no meter re-point.
+  if (isCursorBackgroundEvent(payload)) return
   // The phone's "what it is doing now" line, remote nodes included (it needs no file). Translated to
   // the claude-shaped names `recordRawToolEvent` gates on, as grok's branch does; a child's tool
   // call is not the parent's activity.
@@ -550,8 +563,11 @@ export function applyCursorRaw(
   if (!nodeId || deps.isRemote(nodeId)) return
   const current = deps.nodeSession.get(nodeId)
   if (current && isCursorChildToolEvent(payload)) return
-  void trackCursorContext(deps.tail, payload).then((id) => {
-    if (!id) return
+  let epoch = nodeEpoch.get(nodeId)
+  if (!epoch) nodeEpoch.set(nodeId, (epoch = {}))
+  const live = (): boolean => nodeEpoch.get(nodeId) === epoch
+  void trackCursorContext(deps.tail, payload, live).then((id) => {
+    if (!id || !live()) return
     // A slower scan for an older event must not overwrite a newer association.
     const now = deps.nodeSession.get(nodeId)
     if (now && now !== id && isCursorChildToolEvent(payload)) return

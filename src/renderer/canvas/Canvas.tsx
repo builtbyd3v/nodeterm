@@ -12683,7 +12683,7 @@ export function Canvas() {
               // Gated twice: on the pane's owner (an agent that opens a node and renames it in the
               // same breath would otherwise splice this line into the launch command still being
               // typed) and, inside, on the name actually changing.
-              void pushSessionRename(api.pty, id, title, prevTitle, agentId)
+              void pushSessionRename(api.pty, id, title, prevTitle)
             }
             reply(
               // Say which of the two happened: the caller cannot see the pane, and "already named"
@@ -13393,7 +13393,7 @@ export function Canvas() {
       const agentId = (liveNode?.data.agentId as AgentId | undefined) ?? storedNode?.agentId
       const name = title.trim()
       if (agentId && canRename(agentId) && name) {
-        void pushSessionRename(api.pty, id, name, prevTitle, agentId)
+        void pushSessionRename(api.pty, id, name, prevTitle)
       }
     },
     [activeProjectId, setNodes, markDirty, writeDisk]

@@ -414,8 +414,8 @@ export const RENAME_CAPABLE = ['claude', 'grok', 'cursor'] as const
 // Agents whose TUI ignores an Enter that arrives in the SAME write as a bracketed paste: the text
 // lands in the composer and is never submitted. MEASURED for cursor (2026.10.01): nodeterm's one-shot
 // paste+Enter left `/rename x` unsubmitted; the same paste followed by a bare Enter, as a second
-// tmux invocation, renamed the chat. `submitsSeparately` is asked by every one-way write that
-// expects the agent to act on its line (today: the session rename push).
+// tmux invocation, renamed the chat. `submitsSeparately` is asked by `PtyManager.sendText`, the one
+// funnel every one-way write reaches.
 export const SEPARATE_SUBMIT_AGENTS = ['cursor'] as const
 // Agents whose OWN session name we can READ and adopt into the node title.
 //

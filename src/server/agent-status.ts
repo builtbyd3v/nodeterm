@@ -20,7 +20,7 @@ import { createContextTail, type ContextTail, type TaskNotification } from '../c
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
-import { applyCursorRaw, cursorContextParse, readCursorContextSource } from '../core/cursor-chat'
+import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
@@ -425,6 +425,7 @@ export function wireAgentStatus(
   //    the old session's tails are dead either way (the respawned agent re-registers its own).
   const releaseNodeTails = (nodeId: string): void => {
     cursorSubagents.release(nodeId)
+    releaseCursorRaw(nodeId)
     hooks.releaseCursorNode?.(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {

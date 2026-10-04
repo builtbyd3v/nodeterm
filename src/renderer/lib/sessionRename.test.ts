@@ -23,7 +23,7 @@ const io = (panes: (string | null)[] | (() => Promise<string | null>)) => {
 describe('pushSessionRename', () => {
   it('writes as soon as a non-shell owns the pane', async () => {
     const x = io(['claude'])
-    await expect(pushSessionRename(x, 'n1', 'My session', 'Claude Code', 'claude')).resolves.toBe(true)
+    await expect(pushSessionRename(x, 'n1', 'My session', 'Claude Code')).resolves.toBe(true)
     expect(x.sent).toEqual(['/rename My session'])
   })
 
@@ -31,21 +31,21 @@ describe('pushSessionRename', () => {
     // The regression this exists for: `claude '<long prompt>'` mid-delivery, cut in half by an
     // interleaved rename, leaving the shell at `quote>` and the agent never started.
     const x = io(['zsh'])
-    await expect(pushSessionRename(x, 'n1', 'My session', 'Claude Code', 'claude')).resolves.toBe(false)
+    await expect(pushSessionRename(x, 'n1', 'My session', 'Claude Code')).resolves.toBe(false)
     expect(x.sent).toEqual([])
   })
 
   it('recognizes a login shell and a full path as shells', async () => {
     for (const pane of ['-zsh', '/bin/bash', 'fish']) {
       const x = io([pane])
-      await pushSessionRename(x, 'n1', 'x', 'was', 'claude')
+      await pushSessionRename(x, 'n1', 'x', 'was')
       expect(x.sent, pane).toEqual([])
     }
   })
 
   it('waits for the CLI to boot, then writes once', async () => {
     const x = io(['zsh', 'zsh', 'node'])
-    await expect(pushSessionRename(x, 'n1', 'Later', 'Earlier', 'claude')).resolves.toBe(true)
+    await expect(pushSessionRename(x, 'n1', 'Later', 'Earlier')).resolves.toBe(true)
     expect(x.sent).toEqual(['/rename Later'])
   })
 
@@ -53,13 +53,13 @@ describe('pushSessionRename', () => {
     const x = io(async () => {
       throw new Error('tmux gone')
     })
-    await expect(pushSessionRename(x, 'n1', 'x', 'was', 'claude')).resolves.toBe(false)
+    await expect(pushSessionRename(x, 'n1', 'x', 'was')).resolves.toBe(false)
     expect(x.sent).toEqual([])
   })
 
   it('treats an unknown (null) pane as "not demonstrated" and stays silent', async () => {
     const x = io([null])
-    await expect(pushSessionRename(x, 'n1', 'x', 'was', 'claude')).resolves.toBe(false)
+    await expect(pushSessionRename(x, 'n1', 'x', 'was')).resolves.toBe(false)
     expect(x.sent).toEqual([])
   })
 
@@ -69,8 +69,7 @@ describe('pushSessionRename', () => {
       { paneCommand: probe, sendText: async () => true, sleep: async () => {} },
       'n1',
       'x',
-      'was',
-      'claude'
+      'was'
     )
     expect(probe).toHaveBeenCalledTimes(RENAME_PUSH_ATTEMPTS)
   })
@@ -94,7 +93,7 @@ describe('pushSessionRename: an unchanged name writes nothing', () => {
     const probe = vi.fn(async () => 'claude')
     const sendText = vi.fn(async () => true)
     await expect(
-      pushSessionRename({ paneCommand: probe, sendText, sleep: async () => {} }, 'n1', 'Trial 1.08', 'Trial 1.08', 'claude')
+      pushSessionRename({ paneCommand: probe, sendText, sleep: async () => {} }, 'n1', 'Trial 1.08', 'Trial 1.08')
     ).resolves.toBe(false)
     expect(sendText).not.toHaveBeenCalled()
     // Nothing is asked of tmux either: the cheapest possible no-op, on a path an orchestrator
@@ -104,13 +103,13 @@ describe('pushSessionRename: an unchanged name writes nothing', () => {
 
   it('still pushes when the name actually changes', async () => {
     const x = io(['claude'])
-    await expect(pushSessionRename(x, 'n1', 'Trial 1.09', 'Trial 1.08', 'claude')).resolves.toBe(true)
+    await expect(pushSessionRename(x, 'n1', 'Trial 1.09', 'Trial 1.08')).resolves.toBe(true)
     expect(x.sent).toEqual(['/rename Trial 1.09'])
   })
 
   it('pushes the FIRST name a node gets (no previous title is not "unchanged")', async () => {
     const x = io(['claude'])
-    await expect(pushSessionRename(x, 'n1', 'Trial 1.08', '', 'claude')).resolves.toBe(true)
+    await expect(pushSessionRename(x, 'n1', 'Trial 1.08', '')).resolves.toBe(true)
     expect(x.sent).toEqual(['/rename Trial 1.08'])
   })
 
@@ -118,7 +117,7 @@ describe('pushSessionRename: an unchanged name writes nothing', () => {
     // `renameCommand` collapses control runs, so these two titles compose the same submitted
     // line. A raw `!==` would call this a new name and deliver a byte-identical duplicate.
     const x = io(['claude'])
-    await expect(pushSessionRename(x, 'n1', 'Trial\n1.08', 'Trial 1.08', 'claude')).resolves.toBe(false)
+    await expect(pushSessionRename(x, 'n1', 'Trial\n1.08', 'Trial 1.08')).resolves.toBe(false)
     expect(x.sent).toEqual([])
   })
 })
@@ -213,49 +212,24 @@ describe('renameCommand: a title cannot splice a second command', () => {
     // The gate's own tests above pin the ordinary case; this one pins that a malicious title
     // cannot reach the pane un-stripped by going through pushSessionRename instead.
     const x = io(['claude'])
-    return pushSessionRename(x, 'n1', 'Deploy\nrm -rf ~', 'Old name', 'claude').then(() => {
+    return pushSessionRename(x, 'n1', 'Deploy\nrm -rf ~', 'Old name').then(() => {
       expect(x.sent).toEqual(['/rename Deploy rm -rf ~'])
     })
   })
 })
 
-/**
- * cursor (SEPARATE_SUBMIT_AGENTS): MEASURED on cursor-agent 2026.10.01, a paste with its Enter in
- * the same tmux invocation left `/rename x` unsubmitted in the composer; the paste followed by a
- * bare Enter as a SECOND invocation renamed the chat (store meta `name`).
- */
-describe('pushSessionRename: an agent that needs a separate Enter', () => {
-  const ioWithOpts = (pasteResult: boolean) => {
-    const calls: [string, boolean | undefined][] = []
-    return {
-      calls,
+describe('pushSessionRename: a separate-submit agent (cursor)', () => {
+  it('sends ONE line with the default Enter; PtyManager.sendText splits it, nothing here does', async () => {
+    const calls: unknown[][] = []
+    const x = {
       paneCommand: async () => 'cursor-agent',
-      sendText: async (_k: string, t: string, opts?: { enter?: boolean }) => {
-        calls.push([t, opts?.enter])
-        return t === '' ? true : pasteResult
+      sendText: async (...args: unknown[]) => {
+        calls.push(args.slice(1))
+        return true as const
       },
       sleep: async () => {}
     }
-  }
-
-  it('pastes without Enter, then sends a bare Enter', async () => {
-    const x = ioWithOpts(true)
-    await expect(pushSessionRename(x, 'n1', 'Probe', 'Old', 'cursor')).resolves.toBe(true)
-    expect(x.calls).toEqual([
-      ['/rename Probe', false],
-      ['', true]
-    ])
-  })
-
-  it('never sends the Enter when the paste failed (it would submit whatever was composed)', async () => {
-    const x = ioWithOpts(false)
-    await expect(pushSessionRename(x, 'n1', 'Probe', 'Old', 'cursor')).resolves.toBe(false)
-    expect(x.calls).toEqual([['/rename Probe', false]])
-  })
-
-  it('claude keeps its one-shot paste+Enter', async () => {
-    const x = ioWithOpts(true)
-    await pushSessionRename(x, 'n1', 'Probe', 'Old', 'claude')
-    expect(x.calls).toEqual([['/rename Probe', undefined]])
+    await expect(pushSessionRename(x, 'n1', 'Probe', 'Old')).resolves.toBe(true)
+    expect(calls).toEqual([['/rename Probe']])
   })
 })

@@ -5386,7 +5386,7 @@ export function TerminalNode({
   const applyManualTitle = (raw: string, current: string) => {
     const name = raw.trim()
     updateNodeData(id, { title: name, titleAuto: false })
-    if (canRenameNode && agentId && name) void pushSessionRename(api.pty, id, name, current, agentId)
+    if (canRenameNode && name) void pushSessionRename(api.pty, id, name, current)
   }
 
   // Close the rename box, committing only if the value actually changed (so just clicking in
