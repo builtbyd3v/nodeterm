@@ -739,7 +739,7 @@ export class RemoteHooks {
    * host (PATH, or the vendor's `~/.local/bin`, which a non-login ssh shell often lacks): the file
    * is shared with the Cursor IDE, so a host without the CLI gets nothing written. A command
    * holding `//` is refused (cursor strips it as a JSONC comment and the whole file breaks).
-   * Fail-open.
+   * Fail-open, but logged (`warnNotInstalled`).
    */
   private async installCursorRemote(
     conn: SshConnection,
@@ -754,19 +754,15 @@ export class RemoteHooks {
       const probe = await this.r.run(childArgs(conn, controlPath,
         `command -v cursor-agent >/dev/null 2>&1 || [ -x ${posixQuote(`${home}/.local/bin/cursor-agent`)} ]`))
       if (probe.code !== 0) return
-      await this.r.run(
-        childArgs(
-          conn,
-          controlPath,
-          `mkdir -p ${posixQuote(`${remoteDir}/agent-hooks`)} && cat > ${posixQuote(script)} && chmod 755 ${posixQuote(script)}`
-        ),
-        buildManagedScript('cursor', REMOTE_IDENTITY_ROOT)
-      )
+      await this.writeOwnedFile(conn, controlPath, script, buildManagedScript('cursor', REMOTE_IDENTITY_ROOT), {
+        mode: '755'
+      })
       await updateRemoteSettingsFile(`${home}/.cursor/hooks.json`,
         (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
         (cfg) => applyCursorHooks(cfg, command))
-    } catch {
-      /* fail-open: the remote cursor session simply runs without status hooks */
+    } catch (e) {
+      // Fail-open for the connect, not silent: the remote cursor session runs without status hooks.
+      warnNotInstalled('cursor status hook', e)
     }
   }
 
