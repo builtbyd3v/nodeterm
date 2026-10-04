@@ -101,6 +101,7 @@ export const USAGE_PROVIDER_IDS = [
   'claude',
   'claude-remote',
   'codex',
+  'cursor',
   'gemini',
   'grok',
   'kimi',

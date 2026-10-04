@@ -123,8 +123,8 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
   cursor session on the machine. The remote installer only targets POSIX hosts.
 - Joined since this section was first written: resume, mint, session end and the model list
   ("Session continuity"), chat/transfer/context link and the meter, canvas control, rename and
-  subagents ("Orchestration parity"). Not joined: recurring (`/loop`), branch (claude-only),
-  plan-limits usage.
+  subagents ("Orchestration parity"), plan usage in the usage pill (see "Context meter"). Not joined:
+  recurring (`/loop`), branch (claude-only).
 
 ## 8. Device checklist (unverified)
 
@@ -260,8 +260,21 @@ and the find-bar index and cold-resume stay on `readsClaudeTranscript`, which is
 | Mobile | meter rides the shared context mirror (agent-agnostic); not device-verified |
 | SSH node | "not yet": raw branch returns for a remote node, `ensureRemote` is terminal `unresolved`, never this machine's disk |
 
-Not read: account plan limits (CLI `/usage`, needs a login credential): out of scope. Model is not
-shown (the store root states none cheaply; the popover omits it).
+Plan usage is read separately, in the bottom usage pill (`src/core/usage/cursor-usage.ts`, provider
+`cursor`, shown by default, Settings -> Usage toggle). Measured on cursor-agent 2026.10.01-e373342:
+the CLI's own `/usage` calls `aiserver.v1.DashboardService/GetCurrentPeriodUsage` (Connect, plain
+JSON POST `{}`) on `https://api2.cursor.sh` with the login's bearer token. Fields used:
+`planUsage.totalPercentUsed` (else `includedSpend / limit`, the CLI's fallback), `autoPercentUsed`,
+`apiPercentUsed`, and `billingCycleEnd` / `billingCycleStart` (epoch ms as strings) for the reset and
+window. The credential is the CLI's: macOS login Keychain (account `cursor-user`, service
+`cursor-access-token`, created by `/usr/bin/security`, so reading it with the same binary raises no
+prompt), else `auth.json` (`~/.cursor/` with `AGENT_CLI_CREDENTIAL_STORE=file`, `$XDG_CONFIG_HOME/cursor/`
+on Linux, `%APPDATA%/Cursor/` on Windows). Read only, never refreshed; the token stays in process
+(only the service name is on argv). Not signed in or an expired token (401/403) = no row; network or
+5xx = error status keeping the last good numbers of the same login for up to an hour. Not shown:
+dollar spend, bonus credit, on-demand (spend limit) usage, the plan name, and enterprise accounts with
+no `planUsage`. SSH hosts: local login only, no remote leg. Model is not shown in the context meter
+(the store root states none cheaply; the popover omits it).
 Verified live on the dev app: the header showed 90% left against the TUI footer's 10.1% used.
 Unverified: a real store read in this branch's tests (fixtures are synthesized), Mobile on device.
 

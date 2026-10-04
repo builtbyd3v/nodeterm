@@ -7,7 +7,8 @@ import {
   limitKey,
   enabledProviders,
   hasAnyUsage,
-  providerLabel
+  providerLabel,
+  USAGE_PROVIDER_IDS
 } from './usage-limits'
 import type { ProviderUsage, RemoteAccountUsage, UsageLimit } from './types'
 
@@ -184,5 +185,12 @@ describe('providerLabel', () => {
 
   it('falls back to the raw id so a new provider never renders blank', () => {
     expect(providerLabel('whatever-next')).toBe('whatever-next')
+  })
+})
+
+describe('USAGE_PROVIDER_IDS', () => {
+  it('lists cursor, so it gets a Settings toggle and is shown by default', () => {
+    expect(USAGE_PROVIDER_IDS).toContain('cursor')
+    expect(providerLabel('cursor', 'Cursor')).toBe('Cursor')
   })
 })
