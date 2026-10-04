@@ -21,6 +21,7 @@ import { budgetHandoff } from './budget'
 import { locateClaude, locateCodex, locateGemini, locateGrok } from '../../core/handoff/locate'
 import { cursorTranscriptText, locateCursorChat } from '../../core/cursor-chat'
 import { renderCursorTranscript } from './render-cursor'
+import { capabilityAgentId } from '../../shared/agents/config'
 
 export type HandoffResult = { filePath: string } | { error: string }
 
@@ -85,11 +86,14 @@ export async function buildHandoff(opts: {
 }): Promise<HandoffResult> {
   const { sessionId, agentId, sourceNodeId, cwd, accountId } = opts
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { error: 'No valid session id to transfer.' }
-  const render = RENDERERS[agentId]
+  // Routing only: a custom agent's conversation is its base harness's (`canTransferFrom` already
+  // resolves it, so the menu offers Transfer). The header still names the agent the user picked.
+  const base = capabilityAgentId(agentId)
+  const render = RENDERERS[base]
   if (!render) return { error: `Transfer is not supported from ${agentId}.` }
   // cursor's chat is a SQLite store on the node's host; there is no remote reader, and the hook-fed
   // path below is for an agent whose transcript is a text file. Refuse rather than read either.
-  if (agentId === 'cursor' && opts.remote?.isRemoteNode(sourceNodeId)) {
+  if (base === 'cursor' && opts.remote?.isRemoteNode(sourceNodeId)) {
     return { error: 'Transferring a Cursor conversation from a remote (SSH) session is not supported yet.' }
   }
   // Everything below branches on ONE question: does this node's session live on a remote host?
@@ -111,13 +115,13 @@ export async function buildHandoff(opts: {
     raw = await remote.readRemoteFile(sourceNodeId, src, REMOTE_TRANSCRIPT_MAX_BYTES)
     if (raw === null) return { error: 'Failed to read the source transcript from the remote host.' }
   } else {
-    const locate = LOCATORS[agentId]
+    const locate = LOCATORS[base]
     if (!locate) return { error: `Transfer is not supported from ${agentId}.` }
     const src = await locate(sessionId, accountId)
     if (!src) return { error: "Couldn't find the source conversation transcript." }
     try {
       // cursor's `src` is its store.db: its own reader turns it into transcript text.
-      raw = agentId === 'cursor' ? await cursorTranscriptText(src) : await fs.promises.readFile(src, 'utf8')
+      raw = base === 'cursor' ? await cursorTranscriptText(src) : await fs.promises.readFile(src, 'utf8')
       if (raw === null) throw new Error('unreadable')
     } catch {
       return { error: 'Failed to read the source transcript.' }

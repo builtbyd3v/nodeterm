@@ -3,7 +3,7 @@
 // message a note link injects into an agent session, and re-export the link-map builders.
 // Kept free of React/store imports so the connection matrix is unit-testable.
 import { oneLine } from '@shared/one-line'
-import { capabilityAgentId } from '@shared/agents/config'
+import { readsLinkedContextSkill } from '@shared/agents/config'
 import {
   classifyLink,
   planBridges,
@@ -62,13 +62,10 @@ export function linkIdsCoveredByRopes(
   return links.filter((l) => pairs.has(pairKey(l.source, l.target))).map((l) => l.id)
 }
 
-/**
- * Does this agent load nodeterm's `get-linked-context` skill from `~/.claude/skills`? claude, and
- * cursor (measured: it lists that skill in its own `<agent_skills>`, docs/cursor-agent.md). grok
- * reads that root too but its pickup of this skill is unverified, so it keeps the CLI wording.
- */
+/** Does this agent load nodeterm's `get-linked-context` skill? See LINKED_CONTEXT_SKILL_AGENTS; an
+ *  unknown agent gets the skill wording, as it always did. */
 export function usesLinkedContextSkill(agentId: string | undefined): boolean {
-  return !agentId || agentId === 'claude' || capabilityAgentId(agentId) === 'cursor'
+  return !agentId || readsLinkedContextSkill(agentId)
 }
 
 /** Longest note text pushed inline; longer notes are truncated with a pointer to the skill. */

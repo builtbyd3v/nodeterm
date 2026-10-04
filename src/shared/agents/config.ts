@@ -177,7 +177,14 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
   cursor: {
     // Cursor Agent CLI. Measured on `cursor-agent` 2026.09.23-86fc751 (macOS).
     label: 'Cursor',
-    color: '#6b7280',
+    // Cursor's own mark is monochrome, so there is no brand hue to borrow. The first pick, a neutral
+    // grey (#6b7280), was OKLab 0.018 from Grok's #64748b: the two swatches looked identical in the
+    // picker, sidebar, kanban and minimap (review 2026-10-03). This magenta is at least 0.12 OKLab
+    // from every palette swatch (system, agent and FALLBACK_AGENT_COLOR; nearest: system red), and
+    // about 4:1 against both the dark (#1e1e1e) and light (#fff) canvas as a dot or border. It is an
+    // agent colour, so it never carries text (SYSTEM_NODE_COLORS owns those surfaces).
+    // `node-colors.test.ts` pins the distance.
+    color: '#d9468f',
     // Not `agent`: the CLI installs that alias too, and grok ships a binary of the same name.
     launchCmd: 'cursor-agent',
     // Usage is `agent [options] [command] [prompt...]`, so a one-word prompt collides with a
@@ -417,6 +424,11 @@ export const RENAME_CAPABLE = ['claude', 'grok', 'cursor'] as const
 // tmux invocation, renamed the chat. `submitsSeparately` is asked by `PtyManager.sendText`, the one
 // funnel every one-way write reaches.
 export const SEPARATE_SUBMIT_AGENTS = ['cursor'] as const
+// Agents that load nodeterm's `get-linked-context` skill from `~/.claude/skills`, so a context link,
+// a note push or a verify brief can name the skill instead of spelling out the CLI. claude, and
+// cursor (measured: it lists that skill in its own `<agent_skills>`, docs/cursor-agent.md). grok
+// reads that root too, but its pickup of this skill is unverified, so it keeps the CLI wording.
+export const LINKED_CONTEXT_SKILL_AGENTS = ['claude', 'cursor'] as const
 // Agents whose OWN session name we can READ and adopt into the node title.
 //
 // Separate from RENAME_CAPABLE because the two directions are separate facts, and gemini has only
@@ -634,6 +646,7 @@ export const canTransferFrom = (id: AgentId): boolean => includes(TRANSFER_SOURC
 export const reportsSessionEnd = (id: AgentId): boolean => includes(SESSION_END_CAPABLE, id)
 export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const submitsSeparately = (id: AgentId): boolean => includes(SEPARATE_SUBMIT_AGENTS, id)
+export const readsLinkedContextSkill = (id: AgentId): boolean => includes(LINKED_CONTEXT_SKILL_AGENTS, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)

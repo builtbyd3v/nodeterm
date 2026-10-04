@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { buildHandoff, handoffFilename } from './index'
+import { setCustomAgentBaseResolver } from '../../shared/agents/config'
 
 describe('handoffFilename', () => {
   it('builds a filesystem-safe handoff filename', () => {
@@ -59,5 +60,29 @@ describe('buildHandoff — grok as a transfer source', () => {
       sourceNodeId: 'term-1'
     })
     expect(res).toEqual({ error: 'Transfer is not supported from opencode.' })
+  })
+
+  it('a custom cursor-base agent routes to the cursor reader (the menu already offers it Transfer)', async () => {
+    setCustomAgentBaseResolver((id) => (id === 'my-cursor' ? 'cursor' : id === 'my-opencode' ? 'opencode' : undefined))
+    vi.stubEnv('CURSOR_CONFIG_DIR', '/nonexistent-cursor-config')
+    try {
+      const local = await buildHandoff({ sessionId: SESSION, agentId: 'my-cursor', sourceNodeId: 'term-1', cwd: '/nonexistent' })
+      // Reached the cursor locator: an honest "not found" on this machine, never the refusal.
+      expect(local).toEqual({ error: "Couldn't find the source conversation transcript." })
+      const remote = await buildHandoff({
+        sessionId: SESSION,
+        agentId: 'my-cursor',
+        sourceNodeId: 'term-1',
+        remote: { isRemoteNode: () => true, hookedTranscriptPath: () => '/x', readRemoteFile: async () => null, writeRemoteFile: async () => true }
+      })
+      expect(remote).toEqual({ error: 'Transferring a Cursor conversation from a remote (SSH) session is not supported yet.' })
+      // A base with no renderer is still refused, by the name the user knows.
+      expect(await buildHandoff({ sessionId: SESSION, agentId: 'my-opencode', sourceNodeId: 'term-1' })).toEqual({
+        error: 'Transfer is not supported from my-opencode.'
+      })
+    } finally {
+      setCustomAgentBaseResolver(null)
+      vi.unstubAllEnvs()
+    }
   })
 })
