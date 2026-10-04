@@ -129,7 +129,7 @@ command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, neve
 ## 8. Device checklist (unverified)
 
 1. Answered: the interactive TUI fires `beforeSubmitPrompt` and `stop` (see "NEEDS YOU").
-2. `stop` payload: `status` values (`completed|aborted|error` assumed), and that Esc fires it.
+2. `stop` payload: `completed` captured (interactive subagent run); `aborted|error` still assumed, and whether Esc fires it.
 3. Bisect the 18-event stream failure (add events back one at a time in a headless run).
 4. ~~Subagent behaviour~~ measured on 2026.10.01, see "Orchestration parity".
 5. Answered: `/quit` fires `sessionEnd`; cursor is in `SESSION_END_CAPABLE` ("Session continuity").
@@ -243,7 +243,7 @@ byte read for a source that is not a text file. Cursor's is `readCursorContextSo
 `store.db` + `store.db-wal` as the change key (WAL leaves the db file untouched between checkpoints),
 then the store read for the numbers only, handed to `cursorContextParse` as one JSON line. The shared
 1 Hz poll does the re-reading; cursor hook events (`trackCursorContext`) only locate and track the
-store, strictly by `conversation_id` (`locateCursorChat`, chats root only, whole-UUID). ponytail: a
+store, strictly by `conversation_id` (`locateCursorChat`, chats root only, whole-UUID). note: a
 poll, not a hook-triggered reader; upgrade if the stat gate ever shows up in a profile.
 
 **Jail.** No payload path is consumed: `transcript_path` names the redacted agent-transcripts jsonl and
@@ -262,8 +262,8 @@ and the find-bar index and cold-resume stay on `readsClaudeTranscript`, which is
 
 Not read: account plan limits (CLI `/usage`, needs a login credential): out of scope. Model is not
 shown (the store root states none cheaply; the popover omits it).
-Unverified: a real interactive node end to end (no dev app run), a real store read in this branch's
-tests (fixtures are synthesized), Mobile on device.
+Verified live on the dev app: the header showed 90% left against the TUI footer's 10.1% used.
+Unverified: a real store read in this branch's tests (fixtures are synthesized), Mobile on device.
 
 ## Session continuity (resume, mint, session end, restart, models)
 
@@ -297,8 +297,15 @@ split, as opencode): text+Enter in one write is not submitted. Ctrl-U (`KILL_LIN
 draft in the cursor TUI (measured). The `/quit` also waits `EXIT_KEY_GAP_MS` (150 ms) after the
 Ctrl-U: measured on 2026.10.01 in a private tmux, Ctrl-U+`/quit` in one burst then Enter 150 ms later
 left the CLI running 10 of 10 (the `/quit` was dropped, composer empty); Ctrl-U, 150 ms, `/quit`,
-150 ms, Enter returned to the shell 10 of 10. Applies to every `submitsSeparately` agent. The restart rejects `working` (cursor has no blocked state, so an
-approval prompt reads as working and is refused too).
+150 ms, Enter returned to the shell 10 of 10. Applies to every `submitsSeparately` agent. The restart rejects `working` and
+`blocked` (the approval watch reports Cursor's approval prompt as `blocked`, see "NEEDS YOU").
+
+**Relaunch clears the exit.** Our own `/quit` fires `sessionEnd`, which records `sessionEnded`, and
+`--resume` fires no `sessionStart`. So once nodeterm delivers its own resume line (in-place restart,
+Pause/Eco wake, and the cold-restore relaunch a model switch recycles into), the node withdraws
+`sessionEnded` itself (`performResumePhase`'s `onResumed`, and the cold-restore delivery in
+`TerminalNode.tsx`). Without it the chat composer and the phone refused the running CLI as
+"exited" until its next turn.
 
 **Models.** `cursorModelsFrom` parses `cursor-agent models` (`<id> - <label>`, zero-width spaces
 stripped; 246 of 246 lines matched, header and Tip ignored) into `{id, name}`. Probe: `core/cursor-cli.ts`
@@ -441,7 +448,7 @@ asked to list its skills, cursor named `~/.claude/skills/manage-nodeterm-canvas/
 third-party roots are gated by `thirdPartyExtensibility` (CLI default on; a team setting could turn
 it off). Trap: cursor TRUNCATES a long skill list ("52 additional skills were omitted" here), from
 the tail. `~/.claude/skills` sits third, so it survived; a user with hundreds of `~/.cursor/skills`
-could push it out. No `~/.cursor/skills` installer was added (ponytail: add one beside the claude
+could push it out. No `~/.cursor/skills` installer was added (note: add one beside the claude
 skill install if that is ever seen).
 
 ### Subagents (`SUBAGENT_CAPABLE`)
@@ -469,7 +476,7 @@ the parent's `stop` emits `subagent-end` for every Task opened in that turn, and
 Trade-offs, stated: a HEADLESS (`-p`) run has `generation_id === conversation_id` on its own tool
 events (2026.09.28 capture), so they now read as a child's and drive nothing; headless runs fire no
 `beforeSubmitPrompt`/`stop` either, so those events only ever lit a RUNNING badge nothing cleared.
-Parallel Tasks get cards but no tail (ponytail: read the child meta's `toolCallId` to claim them). A
+Parallel Tasks get cards but no tail (note: read the child meta's `toolCallId` to claim them). A
 lost `stop` (network reconnect) leaves the cards to the shared `WORKING_STALE_MS` decay. A node
 closed or recycled mid-Task releases its entry and child tails (`tracker.release`, called from both
 shells' `releaseNodeTails`). Not

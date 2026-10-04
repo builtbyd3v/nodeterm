@@ -52,13 +52,13 @@ export const CURSOR_APPROVAL_HEADINGS: ReadonlySet<string> = new Set([
  *  posts well inside it; an approval waits on a human. */
 export const CURSOR_APPROVAL_DELAY_MS = 1500
 /** When (ms after `preToolUse`) a still-pending call reads the pane; the first match wins.
- *  ponytail: fixed bounded schedule; a dialog first drawn after the last read stays RUNNING. */
+ *  note: fixed bounded schedule; a dialog first drawn after the last read stays RUNNING. */
 export const CURSOR_APPROVAL_READS_MS: readonly number[] = [CURSOR_APPROVAL_DELAY_MS, 4000, 10000]
 
 /**
  * The dialog sits at the bottom of the screen. Only the last few non-blank lines are looked at, so
  * a dialog left in scrollback by an earlier render cannot answer for the current one.
- * ponytail: fixed window, widen if a taller dialog (long command preview) is ever measured.
+ * note: fixed window, widen if a taller dialog (long command preview) is ever measured.
  */
 const TAIL_LINES = 30
 
@@ -112,8 +112,7 @@ export interface CursorApprovalWatchDeps {
   readPane: (nodeId: string) => Promise<string | null>
   /** Where the synthetic `blocked` goes: the hook server's normalized listener. */
   emit: (ev: NormalizedAgentEvent) => void
-  delayMs?: number
-  /** Override the whole read schedule (tests). Default CURSOR_APPROVAL_READS_MS, or [delayMs]. */
+  /** Override the whole read schedule (tests). Default CURSOR_APPROVAL_READS_MS. */
   readsMs?: readonly number[]
 }
 
@@ -153,7 +152,7 @@ interface NodeWatch {
 }
 
 export function createCursorApprovalWatch(deps: CursorApprovalWatchDeps): CursorApprovalWatch {
-  const reads = deps.readsMs ?? (deps.delayMs !== undefined ? [deps.delayMs] : CURSOR_APPROVAL_READS_MS)
+  const reads = deps.readsMs ?? CURSOR_APPROVAL_READS_MS
   const nodes = new Map<string, NodeWatch>()
   // Nodes with a pane capture outstanding. At most one per node, and it outlives release, turn
   // edges and sessionEnd: it is cleared only when the capture itself settles, because a probe that

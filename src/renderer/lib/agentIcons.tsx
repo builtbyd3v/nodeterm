@@ -77,7 +77,7 @@ export function CopilotMark({
   )
 }
 
-/** The Cursor mark, inlined like `CopilotMark` — geometry from `lib/cursorMark.ts`. */
+/** The Cursor mark, inlined like `CopilotMark`, geometry from `lib/cursorMark.ts`. */
 export function CursorMark({
   size,
   className

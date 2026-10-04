@@ -1,6 +1,6 @@
 // Fixture-driven tests for core/cursor-chat.ts. The stores are SYNTHESIZED here (no private chat is
-// committed): `buildStore` writes the layout measured on cursor-agent 2026.09.23/.28 — meta key '0'
-// = hex(JSON), sha256-addressed blobs, a protobuf root whose field 1 lists the message blob ids —
+// committed): `buildStore` writes the layout measured on cursor-agent 2026.09.23/.28: meta key '0'
+// = hex(JSON), sha256-addressed blobs, a protobuf root whose field 1 lists the message blob ids,
 // with message shapes copied from a real chat that ran `echo` and a Write/Read/Grep turn.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import crypto from 'node:crypto'

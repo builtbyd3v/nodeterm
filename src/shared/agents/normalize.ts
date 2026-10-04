@@ -983,8 +983,8 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
 // `cwd` exists on tool events only and was "" for Shell, so nothing here reads it.
 // `parent_tool_call_id` is the bundle's marker for a tool call made inside a subagent
 // (hooks_pb PreToolUseRequestQuery field 10); never seen on the wire, see isCursorChildToolEvent.
-// `status` on `stop` is also from the bundle/docs, never captured: the capture runs were headless
-// and headless runs do not fire `stop` or `beforeSubmitPrompt` at all.
+// `status` on `stop`: `completed` was captured in the interactive TUI (subagent-payloads.json);
+// `aborted` and `error` are from the bundle/docs, never captured.
 interface CursorPayload {
   hook_event_name?: unknown
   conversation_id?: unknown
@@ -1045,7 +1045,7 @@ export function isCursorPayload(payload: unknown): boolean {
  *
  * NEEDS YOU is deliberately absent HERE: the AskQuestion tool fires no tool hook and Cursor's own
  * approval prompt has none either (docs/cursor-agent.md §4). The hook server adds a `blocked` from
- * one pane read of a still-pending tool call instead (core/agents/cursor-approval.ts).
+ * up to three pane reads of a still-pending tool call instead (core/agents/cursor-approval.ts).
  *
  * `sessionId` is `conversation_id`, falling back to `session_id`: the resume feature keys on it.
  */

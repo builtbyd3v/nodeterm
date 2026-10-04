@@ -109,7 +109,7 @@ export function installCursorHooks(opts: CursorInstallOptions = {}): CursorInsta
   const hooksJson = opts.hooksJson ?? cursorHooksJsonPath()
   const script = opts.scriptPath ?? cursorScriptPath()
   // Only where the CLI exists: the file is shared with the IDE and other tools.
-  // ponytail: one boot-time lookup (PATH + vendor dir), no login-shell re-probe like agy's two
+  // note: one boot-time lookup (PATH + vendor dir), no login-shell re-probe like agy's two
   // passes; a cursor-agent living only on a shell-rc PATH is missed until it is on the app's PATH.
   let found: string | null
   try {

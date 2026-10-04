@@ -2840,7 +2840,7 @@ app.whenReady().then(async () => {
     onMessagingAgentEvent(enriched)
   }
   hookServer.setListener(emitAgentStatus)
-  // Cursor NEEDS YOU: one pane read per tool call still pending (core/agents/cursor-approval.ts).
+  // Cursor NEEDS YOU: up to three pane reads per tool call still pending (core/agents/cursor-approval.ts).
   hookServer.setPaneReader((nodeId) => ptyManager.captureSession(nodeId))
   // Deterministic hook-reply approvals (docs/hook-reply-approvals.md): the canvas Approve/Deny
   // buttons (and any relay client) answer a held Claude permission hook here. Route by the node's

@@ -171,7 +171,7 @@ export function parseCursorChat(raw: readonly unknown[]): CursorChatParse {
   return out
 }
 
-/** Newline-delimited JSON of message objects — the raw transcript text Context Link and the handoff
+/** Newline-delimited JSON of message objects: the raw transcript text Context Link and the handoff
  *  exchange, so cursor fits the same "text in, lines out" shape as every other agent. */
 export function parseCursorNdjson(raw: string): unknown[] {
   const out: unknown[] = []
@@ -264,7 +264,7 @@ export async function locateCursorChat(chatId: string | undefined, cwd?: string)
 
 // ── Reading the store (read-only) ───────────────────────────────────────────────────────────────
 
-/** Raw JSON bytes of message blobs read per call, newest first. ponytail: a chat past this shows only
+/** Raw JSON bytes of message blobs read per call, newest first. note: a chat past this shows only
  *  its newest part; a ranged/paged store read if anyone needs deeper history. */
 export const CURSOR_READ_MAX_BYTES = 16 * 1024 * 1024
 const DEFAULT_TITLE = 'New Agent'
@@ -437,7 +437,7 @@ export async function readCursorChat(
   if (page && page.before !== null) return { messages: [], found: true, olderCursor: null, unmatchedResults: [] }
   const p = await locateCursorChat(q.sessionId, q.cwd)
   if (!p) return notFound()
-  // ponytail: no change gate/cache (opencode's export needs one at 1.5 s; this read is milliseconds).
+  // note: no change gate/cache (opencode's export needs one at 1.5 s; this read is milliseconds).
   const store = await readCursorStore(p)
   if (!store) return notFound()
   const parsed = parseCursorChat(store.messages)
@@ -453,7 +453,7 @@ export async function readCursorChat(
  * (`readCursorStore`, messages skipped), handed to `cursorContextParse` as a one-line JSON. The
  * change gate is the db + `-wal` (mtime, size): WAL mode leaves `store.db` itself untouched between
  * checkpoints, and the tail polls at 1 Hz, so an unchanged store costs two stats, not an open.
- * ponytail: polled by the shared tail rather than a bespoke hook-triggered reader; hook events only
+ * note: polled by the shared tail rather than a bespoke hook-triggered reader; hook events only
  * (re)track the store path. A stat-gated poll is cheap enough, and the meter needs no new timer.
  */
 export async function readCursorContextSource(dbPath: string, lastKey: string | undefined): Promise<{ text: string; key: string } | null> {

@@ -405,8 +405,8 @@ export class HookServer {
     this.listener = cb
   }
 
-  /** Cursor's approval prompt has no hook, so a pending tool call earns one pane read
-   *  (core/agents/cursor-approval.ts). Both shells pass their pty manager's `captureSession`;
+  /** Cursor's approval prompt has no hook, so a pending tool call earns up to three pane reads
+   *  (CURSOR_APPROVAL_READS_MS, core/agents/cursor-approval.ts). Both shells pass their pty manager's `captureSession`;
    *  unset = cursor never shows NEEDS YOU, as before. The synthetic `blocked` rides `listener`. */
   private cursorWatch: CursorApprovalWatch | null = null
   setPaneReader(readPane: (nodeId: string) => Promise<string | null>): void {

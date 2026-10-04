@@ -57,7 +57,7 @@ describe('createCursorSubagentTracker over the captured turn', () => {
     expect(r.emitted).toHaveLength(1)
   })
 
-  it('ponytail: two unclaimed Tasks make the child ambiguous, so no tail (cards still end on stop)', () => {
+  it('note: two unclaimed Tasks make the child ambiguous, so no tail (cards still end on stop)', () => {
     const r = rig()
     r.raw(TASK)
     r.raw({ ...TASK, tool_use_id: 'tool_other' })

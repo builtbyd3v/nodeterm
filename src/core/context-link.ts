@@ -136,7 +136,7 @@ export interface ContextLinkDeps {
 // start mid-line, which only costs that one line (it fails to parse and is dropped).
 const REMOTE_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024
 
-// cursor's locator takes (id, cwd?), NOT the shared (id, accountId?) — wrapped so an account id can
+// cursor's locator takes (id, cwd?), NOT the shared (id, accountId?), wrapped so an account id can
 // never be read as a cwd. It locates strictly by the whole-UUID chat id.
 const LINK_LOCATORS = {
   claude: locateClaude,

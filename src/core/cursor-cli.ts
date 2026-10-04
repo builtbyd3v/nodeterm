@@ -45,7 +45,7 @@ async function probe(): Promise<CursorCliCaps> {
   return bin ? probeCursorCliAt(bin) : UNKNOWN_CURSOR_CLI_CAPS
 }
 
-/** The local cursor-agent's catalogue. Memoized for the process lifetime (ponytail: an account
+/** The local cursor-agent's catalogue. Memoized for the process lifetime (note: an account
  *  switch or a model shipped mid-session shows after a restart). A failed probe is NOT kept, so the
  *  next ask retries. Never rejects. */
 export function cursorCliCaps(): Promise<CursorCliCaps> {

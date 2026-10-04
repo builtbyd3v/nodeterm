@@ -13,7 +13,7 @@
 //    Its assistant text is often `[REDACTED]`; tool calls and the final answer are kept.
 //  - the hook payloads hold NO key linking child to parent (no `parent_tool_call_id`). The child's
 //    store.db meta does (`subagentInfo.toolCallId`), but a child is claimed here only when exactly
-//    ONE of the node's open Tasks is unclaimed. ponytail: parallel Tasks get cards without a tail;
+//    ONE of the node's open Tasks is unclaimed. note: parallel Tasks get cards without a tail;
 //    read the child meta's toolCallId if that ever matters.
 //
 // One definition for both shells (CLAUDE.md rule 10): src/main/index.ts and
