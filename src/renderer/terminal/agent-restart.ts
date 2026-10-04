@@ -374,6 +374,13 @@ export async function performResumePhase(d: {
    * would put a phantom in the bulk summary.
    */
   isLive?: () => boolean
+  /**
+   * Called once the resume line has been delivered, right before `'resumed'` is reported. The node
+   * uses it to withdraw its recorded exit (`sessionEnded`): our own exit fired that `sessionEnd`,
+   * and cursor fires no `sessionStart` on `--resume`, so nothing else would clear it before the
+   * next turn and the chat composer and phone would keep refusing the live CLI as "exited".
+   */
+  onResumed?: () => void
 }): Promise<ResumePhaseOutcome> {
   // The eligibility GATE (see performExitPhase): `canResumeWith` validates the session id without
   // building the command. The typed line is the caller's `d.command`; for a builtin with no
@@ -427,7 +434,9 @@ export async function performResumePhase(d: {
   })
   // The session can have died while the line was being verified — the delivery is then cancelled by
   // the teardown and nothing reached the pane, so don't claim a resume.
-  return gone() ? 'not-eligible' : 'resumed'
+  if (gone()) return 'not-eligible'
+  d.onResumed?.()
+  return 'resumed'
 }
 
 /**
@@ -465,6 +474,8 @@ export async function performRestartResume(d: {
    * io then silently no-ops and reporting `'restarted'` would put a phantom in the bulk summary.
    */
   isLive?: () => boolean
+  /** See `performResumePhase`. */
+  onResumed?: () => void
 }): Promise<RestartOutcome> {
   const exited = await performExitPhase({
     agentId: d.agentId,
@@ -487,7 +498,8 @@ export async function performRestartResume(d: {
     deliveryTimeoutMs: d.deliveryTimeoutMs,
     killLine: d.killLine,
     onDelivery: d.onDelivery,
-    isLive: d.isLive
+    isLive: d.isLive,
+    onResumed: d.onResumed
   })
   return resumed === 'resumed' ? 'restarted' : resumed
 }

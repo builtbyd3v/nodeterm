@@ -3187,6 +3187,13 @@ export function TerminalNode({
     // to the still-live session on first mount); everything below that pushes here is gated on
     // `!parked` so nothing is wired twice.
     const cleanups: Array<() => void> = parked ? parked.cleanups : []
+    // nodeterm itself just delivered this node's resume/relaunch line (in-place restart, wake from
+    // Pause/Eco, and the cold-restore relaunch a model switch or "restart agent and shell" recycles
+    // into). The exit our own quit recorded (`sessionEnded`) no longer describes the pane. Claude
+    // would clear it on its SessionStart anyway; cursor fires none on `--resume`, so without this the
+    // chat composer and the phone keep refusing a running CLI as "exited" until its next turn.
+    // note: a sessionEnd POST that lands after the relaunch re-sets it; none has been observed.
+    const markRelaunched = (): void => useAgentStatus.getState().setSessionEnded(id, false)
 
     // Agent state (busy/idle/attention) comes from the agent's own hooks via the
     // agent:status IPC (handled centrally in Canvas) — not from parsing the output here.
@@ -3681,6 +3688,7 @@ export function TerminalNode({
                   if (outcome === 'line-too-long') {
                     setCo(termKey, { launchTooLongBytes: lineBytes(cmd) })
                   }
+                  if (outcome === 'submitted') markRelaunched()
                 },
                 { killLine: getTerminalKillLine() }
               )
@@ -4208,7 +4216,8 @@ export function TerminalNode({
           onDelivery: (cancel) => {
             if (life.dead) cancel()
             else cleanups.push(cancel)
-          }
+          },
+          onResumed: markRelaunched
         })
       })
     )
@@ -4391,7 +4400,8 @@ export function TerminalNode({
           onDelivery: (cancel) => {
             if (life.dead) cancel()
             else cleanups.push(cancel)
-          }
+          },
+          onResumed: markRelaunched
         })
       })
     })
