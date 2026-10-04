@@ -222,6 +222,23 @@ stricter:
 A **headless** host boots the service like every other core service, but with no UI attached nothing
 queries it.
 
+### Hosted team relay (the `team` CLI)
+
+A Server Edition can host a team that desktops join over the relay, run with the `team` CLI as the
+service's own user (`node ~/.nodeterm-server-app/out/server/main.cjs team …`); the operator guide is
+`docs/hosted-team-relay.md`. Two of its verbs exist for the desktop's **Share with team**, and both
+work by hand from a shell on the host. `team bootstrap --owner-key <key> --adopt <dir>
+[--owner-label <name>]` is the whole setup in one idempotent call: it creates the team and starts
+hosting, makes the key an owner, adopts the folder into this core's workspace (deduplicated by real
+path; an existing `.nodeterm/project.json` keeps its nodes) and shares it, then prints the join
+code. `team resume --project <id>` restarts, on this core's own tmux socket, the agent sessions a
+desktop handed over, each with its conversation resumed; it reads its session list as JSON on
+**stdin**, never from the command line. Under `--json`, a server failure (exit 1) prints one JSON
+line on stdout, with a stable code when the server sent one (`E_BAD_KEY`, `E_BAD_CWD`,
+`E_HOSTING_OFF`, `E_ADOPT_FAILED`, `E_BAD_REQUEST`, `E_UNSUPPORTED`); a command line the CLI itself
+refuses exits 2 on stderr only. The browser build cannot start Share with team: it has no SSH
+projects, and its `shareTeam` rejects with `E_UNSUPPORTED`.
+
 ## Security model
 
 Single-user auth. There is one password; sessions are per-browser.

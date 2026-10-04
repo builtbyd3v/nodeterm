@@ -31,6 +31,8 @@ import {
   agentLaunchProgram,
   resumeCommand,
   hasHooksOverSsh,
+  readsScreenDialogs,
+  queuesInputWhileWorking,
   LOCAL_ONLY_HOOK_AGENTS,
   reportsSessionEnd,
   resumeCommandWith,
@@ -586,5 +588,19 @@ describe('cursor NEEDS YOU, SSH hooks and lost stop', () => {
       const ev = normalizeFor('cursor', { nodeId: 'n', agentId: 'cursor', payload: { hook_event_name, tool_use_id: 't' } })
       expect(ev?.state === 'blocked', hook_event_name).toBe(false)
     }
+  })
+})
+
+describe('readsScreenDialogs — whose own dialogs the chat view can see on screen', () => {
+  it('is claude only: its reader would read every other CLI\'s screen as a permanent dialog', () => {
+    expect(readsScreenDialogs('claude')).toBe(true)
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'claude')) expect(readsScreenDialogs(id)).toBe(false)
+  })
+})
+
+describe('queuesInputWhileWorking — who may be sent to mid-turn from the chat view', () => {
+  it('is claude only: every other CLI\'s mid-turn input is unmeasured and may answer what is on screen', () => {
+    expect(queuesInputWhileWorking('claude')).toBe(true)
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'claude')) expect(queuesInputWhileWorking(id)).toBe(false)
   })
 })

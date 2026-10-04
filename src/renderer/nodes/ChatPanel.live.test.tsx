@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
 import type { ChatTranscriptPageRequest } from '@shared/chat-page'
 import { useAgentStatus } from '../state/agentStatus'
 import { CHAT_TAIL_PAGE_BYTES } from '../lib/chatPaging'
-import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS } from '../lib/chatLive'
+import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS, TURN_END_RELOAD_DELAYS_MS } from '../lib/chatLive'
 
 /**
  * The ⌘M panel's live progress glue (the decisions are unit-tested in `lib/chatLive.test.ts`): a
@@ -22,7 +22,7 @@ interface Pending {
   reject: (e: unknown) => void
 }
 
-const { pending, session, sendText } = vi.hoisted(() => {
+const { pending, session, sendChatPrompt } = vi.hoisted(() => {
   const pending: Pending[] = []
   const readTranscript = (
     _s: string | undefined,
@@ -32,9 +32,9 @@ const { pending, session, sendText } = vi.hoisted(() => {
     _g?: string,
     page?: ChatTranscriptPageRequest
   ) => new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ page, resolve, reject }))
-  const sendText = vi.fn(async (_id: string, _t: string) => true as const)
-  const session = { api: { chat: { readTranscript }, pty: { sendText } } }
-  return { pending, session, sendText }
+  const sendChatPrompt = vi.fn(async (_id: string, _t: string, _agent: string) => true as const)
+  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt } } }
+  return { pending, session, sendChatPrompt }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -76,7 +76,7 @@ async function advance(ms: number): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers()
   pending.length = 0
-  sendText.mockClear()
+  sendChatPrompt.mockClear()
   geo.clientHeight = 400
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -107,7 +107,7 @@ describe('ChatPanel live progress', () => {
     await act(async () => {
       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     })
-    expect(sendText).toHaveBeenCalledOnce()
+    expect(sendChatPrompt).toHaveBeenCalledOnce()
     const row = activity()!
     expect(row.textContent).toBe('Claude Code is working…')
     expect(row.getAttribute('role')).toBe('status')
@@ -261,7 +261,7 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(1)
   })
 
-  it('done clears the row and takes the final reload', async () => {
+  it('done clears the row, takes a read at once and the settle reloads — then stops', async () => {
     await hook('working', true)
     await render()
     await settle(0, { messages: [say(0, 'q')] })
@@ -271,7 +271,79 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(2)
     await settle(1, { messages: [say(0, 'q'), say(100, 'answer')] })
     expect(bubbles()).toEqual(['q', 'answer'])
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+    expect(pending).toHaveLength(2 + TURN_END_RELOAD_DELAYS_MS.length)
     await advance(CHAT_LIVE_RELOAD_MIN_MS * 3)
+
+    expect(pending).toHaveLength(2 + TURN_END_RELOAD_DELAYS_MS.length)
+  })
+
+  it('shows a reply written AFTER the Stop hook without reopening the view', async () => {
+    // Claude Code fires Stop ~50 ms before it appends the final reply, so the read at `done` misses
+    // it; the first settle reload is what finds it.
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await settle(1, { messages: [say(0, 'q')] })
+    expect(bubbles()).toEqual(['q'])
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(2, { messages: [say(0, 'q'), say(100, 'the reply')] })
+
+    expect(bubbles()).toEqual(['q', 'the reply'])
+  })
+
+  it('a new turn does not cancel the settle reloads of the one that just ended', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await settle(1, { messages: [say(0, 'q')] })
+    // The next prompt starts a turn right away.
+    await hook('working', true)
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(pending.length - 1, { messages: [say(0, 'q'), say(100, 'first reply')] })
+
+    expect(bubbles()).toContain('first reply')
+  })
+
+  it('a prompt sent as the turn ends is kept until the last settle read, which drops it if it never landed', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await settle(1, { messages: [say(0, 'q'), say(100, 'a')] })
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, 'never landed')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(pending.length - 1, { messages: [say(0, 'q'), say(100, 'a')] })
+    expect(bubbles()).toContain('never landed')
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+    await settle(pending.length - 1, { messages: [say(0, 'q'), say(100, 'a')] })
+
+    expect(bubbles()).not.toContain('never landed')
+  })
+
+  it('unmounting cancels the settle reloads', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+
     expect(pending).toHaveLength(2)
   })
 
@@ -410,8 +482,10 @@ describe('ChatPanel — a sent local command', () => {
     }
     expect(pending.length).toBeGreaterThan(1)
     expect(activity()?.textContent).toBe('Claude Code is working…')
-    // The composer still refuses while the turn runs.
-    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true)
+    // The draft stays editable while the turn runs; for claude, Enter queues (chatSendMode).
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.disabled).toBe(false)
+    expect(ta.placeholder).toBe('Claude Code is working — Enter queues your message')
   })
 
   it('a tail read already in flight defers the command read instead of cancelling it', async () => {
@@ -459,5 +533,56 @@ describe('ChatPanel — a sent local command', () => {
     const after = pending.length // the new session's own initial read
     await advance(CHAT_LIVE_RELOAD_MIN_MS * 3)
     expect(pending.length).toBe(after)
+  })
+})
+
+describe('ChatPanel — a sent built-in that opens a dialog in the TUI', () => {
+  async function renderWith(onShowTerminal: () => void): Promise<void> {
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" onShowTerminal={onShowTerminal} />)
+    })
+  }
+  async function send(text: string): Promise<void> {
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, text)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+  }
+
+  it('/rewind is sent, THEN the view flips to the terminal (the dialog is there, and the next Enter would answer it)', async () => {
+    const onShowTerminal = vi.fn(() => {
+      // The flip happens only after the pane accepted the text.
+      expect(sendChatPrompt).toHaveBeenCalledWith(NODE, '/rewind', 'claude')
+    })
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/rewind')
+    expect(onShowTerminal).toHaveBeenCalledOnce()
+  })
+
+  it('a built-in that runs with no dialog (/compact) and a plain message stay in the view', async () => {
+    const onShowTerminal = vi.fn()
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/compact')
+    await send('please rewind the file')
+    expect(sendChatPrompt).toHaveBeenCalledTimes(2)
+    expect(onShowTerminal).not.toHaveBeenCalled()
+  })
+
+  it('a refused send (pane not writable) never flips', async () => {
+    const onShowTerminal = vi.fn()
+    sendChatPrompt.mockResolvedValueOnce(false as never)
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/model')
+    expect(onShowTerminal).not.toHaveBeenCalled()
   })
 })

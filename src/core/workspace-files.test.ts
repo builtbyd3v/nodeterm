@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { CanvasNodeState, Project, ProjectKanban, Workspace } from '../shared/types'
 import {
   toPortableNodes, resolveNodes, projectToFile, fileToProject, framingViewport,
-  sameProjectContent, splitWorkspace, serializeProjectFile, sanitizeKanban
+  sameProjectContent, splitWorkspace, serializeProjectFile, sanitizeKanban, sanitizeHandedOffTo
 } from './workspace-files'
 import { legacyFileId } from '../shared/project-id'
 import { CANVAS_LAYOUTS_CAP, type CanvasLayout } from '../shared/canvas-layout'
@@ -430,6 +430,53 @@ describe('splitWorkspace', () => {
       () => 1, '2026-07-11T00:00:00.000Z')
     expect(remote.index.entries[0]).toMatchObject({ id: 'p1', ssh: { remoteCwd: '~/app' } })
     expect(remote.index.entries[0].cache).toBeUndefined() // no cache fabricated from the placeholder
+  })
+})
+
+describe('handedOffTo', () => {
+  const sshConn = { server: { host: 'h', user: 'u' } as any, remoteCwd: '~/app' }
+  const handed = { hostId: 'h1', projectId: 'project-9', at: 1 }
+
+  it('sanitizes: keeps a well-formed record, drops junk', () => {
+    expect(sanitizeHandedOffTo({ hostId: 'h1', projectId: 'project-1', at: 5 })).toEqual({ hostId: 'h1', projectId: 'project-1', at: 5 })
+    expect(sanitizeHandedOffTo({ at: 5 })).toEqual({ at: 5 }) // a handover in progress
+    expect(sanitizeHandedOffTo('x')).toBeUndefined()
+    expect(sanitizeHandedOffTo(null)).toBeUndefined()
+    expect(sanitizeHandedOffTo({ hostId: 7, at: 5 })).toEqual({ at: 5 })
+    expect(sanitizeHandedOffTo({ hostId: 'h'.repeat(200), at: 5 })).toEqual({ at: 5 })
+    expect(sanitizeHandedOffTo({ hostId: '', projectId: 'p'.repeat(129), at: 5 })).toEqual({ at: 5 })
+    expect(sanitizeHandedOffTo({ hostId: 'h1' })).toBeUndefined() // no timestamp
+    expect(sanitizeHandedOffTo({ hostId: 'h1', at: Number.NaN })).toBeUndefined()
+    expect(sanitizeHandedOffTo({ hostId: 'h1', at: '5' })).toBeUndefined()
+  })
+
+  it('rides the SSH index entry and never the shared file or the ssh cache', () => {
+    const p = project({ id: 'p3', ssh: sshConn, handedOffTo: handed })
+    const { index, files, dataFiles } = splitWorkspace(
+      { version: 2, activeProjectId: 'p3', projects: [p] }, () => 1, '2026-07-11T00:00:00.000Z')
+    expect(index.entries[0].handedOffTo).toEqual(handed)
+    // The cache is the copy that gets mirrored to the host's project.json.
+    expect(index.entries[0].cache).toBeDefined()
+    expect(JSON.stringify(index.entries[0].cache)).not.toContain('handedOffTo')
+    for (const f of [...files.values(), ...dataFiles.values()]) expect(JSON.stringify(f)).not.toContain('handedOffTo')
+    expect(JSON.stringify(projectToFile(p, 1, '2026-07-11T00:00:00.000Z'))).not.toContain('handedOffTo')
+  })
+
+  it('an unavailable placeholder keeps it on its header-only entry', () => {
+    const { index } = splitWorkspace(
+      { version: 2, activeProjectId: 'p3', projects: [project({ id: 'p3', ssh: sshConn, handedOffTo: handed, unavailable: true })] },
+      () => 1, '2026-07-11T00:00:00.000Z')
+    expect(index.entries[0].handedOffTo).toEqual(handed)
+    expect(index.entries[0].cache).toBeUndefined()
+  })
+
+  it('fileToProject restores it from the entry, and only from the entry', () => {
+    const f = projectToFile(project({ ssh: sshConn }), 1, '2026-07-11T00:00:00.000Z')
+    expect(fileToProject(f, { id: 'p1', ssh: sshConn, handedOffTo: handed }).handedOffTo).toEqual(handed)
+    expect('handedOffTo' in fileToProject(f, { id: 'p1', ssh: sshConn })).toBe(false)
+    // A field of this name in the shared file is not this machine's record and is never read.
+    const forged = { ...f, handedOffTo: handed } as ProjectFileV1
+    expect('handedOffTo' in fileToProject(forged, { id: 'p1', ssh: sshConn })).toBe(false)
   })
 })
 

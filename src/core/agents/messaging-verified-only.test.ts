@@ -136,6 +136,33 @@ describe('send/reply require `verified` — and controlPolicy is NOT the decider
   })
 })
 
+describe('issue #1088: a refusal caused by the INSTANCE says so', () => {
+  it('names the unavailable node identity and the shell-reported cause, still refusing', async () => {
+    // A keyring-less Linux desktop could not arm a secret at all, so EVERY session was legacy and
+    // `send`/`settings` were refused forever with only the flat sentence — no visible cause.
+    hookServer.clearNodeAuthSecretForTests()
+    hookServer.setNodeIdentityUnavailable(new Error('Encryption is not available.'))
+    try {
+      for (const verb of ['send', 'settings'] as const) {
+        const res = await post(verb, 'n-src', undefined, 'text/plain')
+        expect(res.status, verb).toBe(403)
+        const text = (await res.text()).trim()
+        expect(text.startsWith(verifiedRefusalFor(verb)), verb).toBe(true)
+        expect(text, verb).toContain('Node identity is unavailable in this NodeTerm instance')
+        expect(text, verb).toContain('Encryption is not available.')
+        const json = (await (await post(verb, 'n-src')).json()) as { error: string }
+        expect(json.error, verb).toContain('Node identity is unavailable')
+      }
+      expect(handled).toEqual([])
+    } finally {
+      hookServer.setNodeAuthSecret(SECRET)
+    }
+    // Arming a secret supersedes the recorded failure: back to the flat, diagnosis-free sentence.
+    const res = await post('send', 'n-src', undefined, 'text/plain')
+    expect((await res.text()).trim()).toBe(MESSAGING_CONTROL_REFUSAL)
+  })
+})
+
 describe('where the verbs sit in the routing tables', () => {
   // `needsLiveCanvas('send'/'reply') === false` is pinned where the function lives —
   // `src/renderer/lib/controlRouting.test.ts` — because this core project cannot import the
@@ -168,16 +195,33 @@ describe('where the verbs sit in the routing tables', () => {
     // New verb, so fail-closed from day one strands no legacy population either.
     // `run` (#925) is here because it STARTS a process in a session the user is not watching —
     // possibly in another project; new verb, so fail-closed from day one strands nobody.
+    // `report-outcome` is here because a reported success RELEASES every dependent armed with
+    // `--after-success`: only a verified caller is provably the station the report is about.
+    // `issues` / `prs` resolve the project to read from the CALLER's node, so a forgeable caller
+    // could read any project's GitHub lane (bound sessions, dispatch state); new verbs.
     expect([...requiresVerified].sort()).toEqual([
+      'issues',
       'notify',
       'open-project',
+      'prs',
       'reply',
       'report-issue',
+      'report-outcome',
       'run',
       'send',
       'settings',
       'sticky'
     ])
+  })
+
+  it('the issues / prs refusal is its own flat sentence, not the messaging one', () => {
+    expect(verifiedRefusalFor('issues')).toBe('GitHub lane read refused.')
+    expect(verifiedRefusalFor('prs')).toBe('GitHub lane read refused.')
+  })
+
+  it('the report-outcome refusal is its own flat sentence, not the messaging one', () => {
+    expect(verifiedRefusalFor('report-outcome')).toBe('Outcome report refused.')
+    expect(verifiedRefusalFor('report-outcome')).not.toBe(MESSAGING_CONTROL_REFUSAL)
   })
 
   it('the run refusal is its own flat sentence, not the messaging one (#925)', () => {

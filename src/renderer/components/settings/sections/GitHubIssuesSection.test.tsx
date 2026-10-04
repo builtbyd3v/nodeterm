@@ -4,6 +4,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitHubAuthStatus, GitHubControlView } from '@shared/github-issues'
 import { useProjects } from '../../../state/projects'
+import { useSettings } from '../../../state/settings'
+import { DEFAULT_SETTINGS } from '@shared/types'
+import { dispatchBinding } from '@shared/board-dispatch'
 import { registerWorkspaceDirty } from '../../../state/workspaceDirty'
 import { SettingsSearchContext } from '../context'
 import { GitHubIssuesSection, STATUS_AFTER_EDIT_MS } from './GitHubIssuesSection'
@@ -113,9 +116,49 @@ describe('GitHubIssuesSection', () => {
   })
 
   afterEach(() => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS } })
     act(() => root.unmount())
     host.remove()
     unregisterDirty()
+  })
+
+  // #1090: `dispatchStale` is computed during render and reads `repository` through
+  // `dispatchBindingFor`. While that `const` was declared below the early returns, any render with a
+  // dispatch entry for the active project threw a TDZ ReferenceError and blanked all of Settings.
+  const withDispatch = (binding: string): void => {
+    useSettings.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        boardDispatch: {
+          paused: false,
+          projects: { p1: { columnId: 'todo', agentId: 'claude', maxConcurrent: 1, binding } }
+        }
+      }
+    })
+  }
+
+  it('renders with dispatch switched on for the active project (#1090)', async () => {
+    withDispatch(dispatchBinding('owner/repo', 'Todo', 'status:todo')!)
+    stub(viewWith({}, true))
+    await mount()
+    expect(host.textContent).toContain('Dispatch agents')
+    expect(host.textContent).not.toContain('Nothing dispatches until you confirm it again')
+  })
+
+  it('still flags a dispatch binding that no longer matches the column (#1090)', async () => {
+    withDispatch(dispatchBinding('owner/repo', 'Renamed', 'status:todo')!)
+    stub(viewWith({}, true))
+    await mount()
+    expect(host.textContent).toContain('Nothing dispatches until you confirm it again')
+  })
+
+  it('does not call a dispatch binding stale before the repository is known (#1090)', async () => {
+    withDispatch(dispatchBinding('owner/repo', 'Todo', 'status:todo')!)
+    status = vi.fn(() => new Promise<GitHubControlView>(() => {}))
+    ;(window as unknown as { nodeTerminal: any }).nodeTerminal.githubControl.status = status
+    await mount()
+    expect(host.textContent).toContain('Dispatch agents')
+    expect(host.textContent).not.toContain('Nothing dispatches until you confirm it again')
   })
 
   it('says until when sync is held, and how much of the GitHub budget is left', async () => {

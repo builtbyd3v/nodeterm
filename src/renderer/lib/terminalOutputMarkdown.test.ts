@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { marked } from 'marked'
-import { MD_OUTPUT_MAX_LINES, renderTerminalOutput, tailOutputLines } from './terminalOutputMarkdown'
+import { MD_OUTPUT_MAX_LINES, renderTerminalOutput, stripTerminalControls, tailOutputLines } from './terminalOutputMarkdown'
 import { renderMarkdown } from './markdown'
 
 /** Visible text of the rendered HTML, the way a user reads it. */
@@ -64,6 +64,38 @@ describe('renderTerminalOutput', () => {
     expect(renderTerminalOutput('```\r\na  \r\nb\t\r\n```\r\nx \r\ny\r\n\r\n')).toBe(
       renderTerminalOutput('```\na\nb\n```\nx\ny')
     )
+  })
+
+  it('drops the colour codes an SSH capture (capture-pane -e) carries', () => {
+    // Shaped like the reported screen: 256-colour SGR around file names, bold labels, a reset.
+    const raw = '\x1b[1mDosyalar\x1b[0m: \x1b[38;5;153mview/web/css/items.css\x1b[39m done\n\x1b[38;5;244m────\x1b[39m'
+    const html = renderTerminalOutput(raw)
+    expect(html).toContain('Dosyalar')
+    expect(html).toContain('view/web/css/items.css')
+    expect(html).not.toMatch(/\[[0-9;]*m/)
+    expect(html).not.toContain('\x1b')
+  })
+
+  it('drops OSC sequences (hyperlinks, titles) and keeps their visible text', () => {
+    const raw = 'see \x1b]8;;https://example.com\x1b\\the docs\x1b]8;;\x1b\\ and \x1b]0;title\x07done'
+    expect(stripTerminalControls(raw)).toBe('see the docs and done')
+  })
+
+  it('keeps tabs, newlines and a CRLF capture\'s carriage returns', () => {
+    expect(stripTerminalControls('a\tb\r\nc\x07\x00d')).toBe('a\tb\r\ncd')
+  })
+
+  it('stays linear on a long run of unterminated escapes', () => {
+    const raw = '\x1b['.repeat(200_000) + 'x'
+    const t = performance.now()
+    stripTerminalControls(raw)
+    expect(performance.now() - t).toBeLessThan(1000)
+  })
+
+  it('tailOutputLines counts lines after the codes are gone', () => {
+    const { text, dropped } = tailOutputLines('\x1b[31ma\x1b[0m\nb\nc', 2)
+    expect(text).toBe('b\nc')
+    expect(dropped).toBe(1)
   })
 
   it('renders empty input as empty', () => {

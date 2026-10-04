@@ -14,16 +14,16 @@ import type { PaneOwner } from '@shared/agents/pane-owner-predicate'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const { sendText, paneOwner, session } = vi.hoisted(() => {
-  const sendText = vi.fn(async (_id: string, _text: string) => true as const)
+const { sendChatPrompt, paneOwner, session } = vi.hoisted(() => {
+  const sendChatPrompt = vi.fn(async (_id: string, _text: string, _agent: string) => true as const)
   const paneOwner = vi.fn(async (_id: string): Promise<PaneOwner | null> => null)
   const session = {
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true }) },
-      pty: { sendText, paneOwner }
+      pty: { sendChatPrompt, paneOwner }
     }
   }
-  return { sendText, paneOwner, session }
+  return { sendChatPrompt, paneOwner, session }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -57,7 +57,7 @@ async function send(ta: HTMLTextAreaElement, text: string): Promise<void> {
 }
 
 beforeEach(() => {
-  sendText.mockClear()
+  sendChatPrompt.mockClear()
   paneOwner.mockReset()
   toasts = []
   window.addEventListener('nodeterm:toast', onToast)
@@ -82,19 +82,19 @@ describe('ChatPanel — codex send asks the kernel', () => {
     paneOwner.mockResolvedValue(CODEX)
     await send(await mount('codex'), 'run the tests')
     expect(paneOwner).toHaveBeenCalledWith(NODE)
-    expect(sendText).toHaveBeenCalledWith(NODE, 'run the tests')
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'run the tests', 'codex')
   })
 
   it('refuses, with a toast, when a SHELL owns the pane though the store still reads done', async () => {
     paneOwner.mockResolvedValue(SHELL)
     await send(await mount('codex'), 'rm -rf build')
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
     expect(toasts).toEqual(['Codex is no longer running in this terminal — the message was not sent.'])
   })
 
   it('claude is not probed (its hooks announce a quit)', async () => {
     await send(await mount('claude'), 'hello')
     expect(paneOwner).not.toHaveBeenCalled()
-    expect(sendText).toHaveBeenCalled()
+    expect(sendChatPrompt).toHaveBeenCalled()
   })
 })

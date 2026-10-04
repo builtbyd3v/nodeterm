@@ -1,4 +1,5 @@
 import { useContextEnsure } from '../../terminal/useContextEnsure'
+import { transcriptSessionFor } from '../../lib/transcriptSession'
 import { FIND_DECORATIONS } from '../../lib/palette'
 import { ptyRefusal } from '@shared/pty-refusal'
 
@@ -19,23 +20,48 @@ import { FindBar } from '../FindBar'
 import { useAgentStatus } from '../../state/agentStatus'
 import { useProjects } from '../../state/projects'
 import { useSession } from '../../session/session'
+import { isHostedReadOnly } from '../../state/hostedTeams'
 import { useSettings } from '../../state/settings'
+import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
+import {
+  FONT_ZOOM_NODE_ATTR,
+  requestTerminalFontZoom,
+  terminalFontZoomAction
+} from '../../terminal/terminal-font-zoom'
 import { useTerminalSearch } from '../../terminal/useTerminalSearch'
 import { useTerminalGlass } from '../../lib/useTerminalGlass'
 import { LocalTransport } from '../../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../../terminal/file-drop'
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
+import { attachCopyOnSelect } from '../../terminal/copy-on-select'
 import {
+  cachedCwd,
+  createFileLinkProvider,
   createOsc8LinkHandler,
   createUrlLinkProvider,
+  fileMissMessage,
   installLinkClickFallback,
-  installLinkContextMenu
+  installLinkContextMenu,
+  makeDirListingLookup,
+  type UnverifiedPath
 } from '../../terminal/file-links'
+import { isBrowserRuntime } from '../../bridge/runtime'
+import { fileLinkDialect } from '../../terminal/file-link-dialect'
+import { hostPlatformFor } from '../../terminal/host-platform'
+import { sshFs } from '../../terminal/ssh-fs'
+import { cardFileLinkRoute } from '../../lib/cardFileLinks'
+import { projectSessionSource } from '../LiveLinkChip'
+import type { LocalFileTarget } from './LocalFilePreviewModal'
+import type { FsApi } from '@shared/types'
 import { urlLinkMenuItems } from '../../terminal/link-menu'
 import { ContextMenu } from '../ContextMenu'
 import { parseOsc52 } from '../../terminal/osc52'
+import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../../terminal/osc52-policy'
 import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
+import { pasteWithImageReceipt } from '../../terminal/image-paste-confirm'
+import { usePasteReceipt } from '../../terminal/usePasteReceipt'
+import { agentProcessInPane } from '../../terminal/live-work'
 import {
   attachReplay,
   cursorPlacementSeq,
@@ -72,6 +98,13 @@ export interface ModalSpawn {
   sshRemoteTmux?: boolean
   /** One-shot launch command for a fresh session (agent CLIs). */
   initialCommand?: string
+  /** The node's own font size (issue #915, `data.terminalFontSize`). The modal is a second view of
+   *  the SAME session, so it renders at the node's size, not the global one — and, being a
+   *  co-attach subscriber, re-reports its grid when that changes like any font change. */
+  terminalFontSize?: number
+  /** The session id the node was launched with (`data.agentSessionId`) — the transcript readers'
+   *  fallback when no hook confirmed one (lib/transcriptSession.ts). Never used to spawn. */
+  agentSessionId?: string
 }
 
 /**
@@ -98,10 +131,44 @@ interface ModalTerminalProps {
    * completion, which a quick ⌘M can precede). Same rules as the canvas node's ⌘M face.
    */
   covered?: boolean
+  /** The project this CARD belongs to — not necessarily the active one (the Omni board opens cards
+   *  from every project). File links resolve against this project's filesystem; absent = no file
+   *  links (see `cardFileLinkRoute`). */
+  projectId?: string
+  /** A file link was activated: the card modal previews it in its own overlay instead of uncovering
+   *  the canvas. Absent = file links are not offered at all. */
+  onOpenFile?: (file: LocalFileTarget) => void
 }
 
-export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covered = false }: ModalTerminalProps) {
-  const { api } = useSession()
+export function ModalTerminal({
+  nodeId,
+  spawn,
+  searchOpen,
+  onCloseSearch,
+  covered = false,
+  projectId,
+  onOpenFile
+}: ModalTerminalProps) {
+  const session = useSession()
+  const { api } = session
+  // Read at click time from the lifecycle effect, which runs once per mount.
+  const projectIdRef = useRef(projectId)
+  projectIdRef.current = projectId
+  const onOpenFileRef = useRef(onOpenFile)
+  onOpenFileRef.current = onOpenFile
+  // MIRROR TerminalNode: the path dialect belongs to the core that owns the filesystem, never this
+  // window's OS. A ref, so resolving it never re-runs the lifecycle effect.
+  const corePlatformRef = useRef<string | null>(null)
+  useEffect(() => {
+    let live = true
+    corePlatformRef.current = null
+    void hostPlatformFor(api).then((platform) => {
+      if (live) corePlatformRef.current = platform
+    })
+    return () => {
+      live = false
+    }
+  }, [api])
   const hostRef = useRef<HTMLDivElement>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
@@ -133,14 +200,20 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
   const observedAccount = useAgentStatus((s) => s.byId[nodeId]?.account)
   // …resolved against the live account list, so linking the dir repoints the reader at once.
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
-  useContextEnsure(api.context, nodeId, spawn.agentId ?? observedAgentId, agentSessionId, spawn.cwd,
+  // MIRROR TerminalNode: the meter's rehydration reads the same session the ⌘M view does.
+  const transcript = transcriptSessionFor({ live: agentSessionId, persisted: spawn.agentSessionId, cwd: spawn.cwd })
+  useContextEnsure(api.context, nodeId, spawn.agentId ?? observedAgentId, transcript.sessionId, transcript.cwd,
     effectiveAccountId(spawn.accountId, observedAccount, claudeAccounts))
   // One shallow-compared subscription for the whole appearance slice — see useXtermVisualSettings.
   // MIRROR TerminalNode: scoped to the OWNING project (`owningProjectId`, the active one — a modal
   // only ever opens over it), deliberately NOT this card's connection scope. `sshConnectionScope`
   // answers a project×host attachment id for a session on a foreign host, which names no project at
   // all — the per-project appearance would silently vanish for exactly those cards.
-  const visual = useXtermVisualSettings(owningProjectId())
+  // …and the NODE's own font size (issue #915), so this second view matches the canvas one.
+  const visual = useXtermVisualSettings(owningProjectId(), spawn.terminalFontSize)
+  // MIRROR TerminalNode: the xterm is BUILT from the effective appearance, not the bare globals.
+  const visualRef = useRef(visual)
+  visualRef.current = visual
   // Liquid Glass: the same glass as the canvas node (a second view of one session must look like
   // it). The DOM renderer keeps app-painted cell backgrounds opaque (see CLAUDE.md).
   const { glass, vars: glassVars } = useTerminalGlass(visual.terminalTheme)
@@ -148,6 +221,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
   glassRef.current = glass
   const [dropping, setDropping] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const pasteReceipt = usePasteReceipt()
   // Same copy feedback as the canvas node — a copy here is the same act as a copy there, including
   // the agent gate: a claude card stays silent because claude prints its own copy line.
   const copy = useCopyFeedback({
@@ -155,8 +229,8 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     hasSelection: () => !!termRef.current?.hasSelection(),
     enabled: !reportsOwnCopy(spawn.agentId as AgentId | undefined)
   })
-  // Right-click on a URL → the canvas node's link menu, URL rows only (no file links here — see the
-  // link wiring in the lifecycle effect).
+  // Right-click on a URL → the canvas node's link menu, URL rows only (file rows act on the active
+  // project — see the link wiring in the lifecycle effect).
   const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
 
   // Same search machinery as the canvas node: capture-indexed matches + xterm highlight.
@@ -203,7 +277,9 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // Appearance comes from the SAME source as the canvas node's terminal — this modal is a second
     // view of one session, and a card that renders it in different colours reads as a different
     // terminal. (It used to hardcode its own background, which is exactly what happened.)
-    const term = new Terminal(xtermOptionsFromSettings(s, glassRef.current))
+    const term = new Terminal(xtermOptionsFromSettings(visualRef.current, glassRef.current))
+    // The same read-only rule as the canvas node: a hosted team's Viewer/Commenter never types here.
+    if (isHostedReadOnly(session.id)) term.options.disableStdin = true
     // Without a handler xterm answers an OSC 8 click with a window.confirm — the one surface
     // where this session's links would prompt instead of opening like the canvas node's.
     term.options.linkHandler = createOsc8LinkHandler((uri) =>
@@ -232,26 +308,103 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     let dead = false
     const cleanups: Array<() => void> = []
 
-    // MIRROR TerminalNode's link wiring, minus file links. The provider handles Cmd/Ctrl+click on
-    // URL text when mouse-reporting is off (plain-shell sessions); the capture-phase fallback is
-    // what works under tmux/agent mouse-reporting — the norm, and the only path on which the OSC 8
-    // linkHandler above can ever fire in a tmux-backed session (xterm's own link activation is
-    // swallowed by the mouse report, see installLinkClickFallback). File links stay a canvas-node
-    // affordance: the modal has no project-fs/dialect routing, and resolving a path against the
-    // wrong machine is worse than not linking it — hence fileEnabled: false, not stub deps that
-    // pretend to resolve.
+    // MIRROR TerminalNode's link wiring. The URL provider handles Cmd/Ctrl+click on URL text when
+    // mouse-reporting is off (plain-shell sessions); the capture-phase fallback is what works under
+    // tmux/agent mouse-reporting — the norm, and the only path on which the OSC 8 linkHandler above
+    // can ever fire in a tmux-backed session (xterm's own link activation is swallowed by the mouse
+    // report, see installLinkClickFallback).
+    // File links use main's token model and lookup unchanged, but resolve against the CARD's project
+    // (`cardFileLinkRoute`), not the active one: the Omni board opens cards from every project, and
+    // resolving a path against the wrong machine is worse than not linking it — so any doubt (no
+    // project, a relay/server core, a session on a host the project's fs does not cover, an unknown
+    // core platform) turns file links off. An activated file opens in the card's own preview.
     const openUrl = (uri: string): void => window.nodeTerminal.shell.openExternal(uri)
+    const route = () => {
+      const id = projectIdRef.current
+      if (!id || !onOpenFileRef.current) return null
+      const project = useProjects.getState().projects.find((p) => p.id === id)
+      return cardFileLinkRoute({ project, source: projectSessionSource(id), spawn })
+    }
+    const projectFs = (): FsApi | null => {
+      const r = route()
+      if (!r) return null
+      return r.ssh ? sshFs(projectIdRef.current!) : api.fs
+    }
+    const pathConvention = (): { windows?: boolean } | null => {
+      const r = route()
+      if (!r) return null
+      const dialect = fileLinkDialect({
+        source: 'local',
+        browserRuntime: isBrowserRuntime(),
+        viewerWindows: isWindowsPlatform(),
+        corePlatform: corePlatformRef.current,
+        sshProject: r.sshProject,
+        standaloneSsh: r.standaloneSsh
+      })
+      return dialect ? { windows: dialect === 'windows' } : null
+    }
+    const lookup = makeDirListingLookup(
+      async (dir) => {
+        const fs = projectFs()
+        if (!fs) throw new Error('no filesystem to check it on')
+        return fs.list(dir)
+      },
+      3000,
+      pathConvention
+    )
+    const getCwd = (): string | undefined => spawn.cwd || undefined
+    // The pane's CURRENT directory — the second anchor for a relative path (see CwdSources).
+    const getLiveCwd = cachedCwd(() => api.pty.paneCwd(nodeId))
+    const fileEnabled = (): boolean => pathConvention() !== null
+    const openFile = (abs: string, isDir: boolean): void => {
+      const r = route()
+      const id = projectIdRef.current
+      if (!r || !id) return
+      if (isDir) {
+        // The Explorer drawer only shows the ACTIVE project; revealing a folder of another project's
+        // card there would show the wrong tree.
+        if (id === useProjects.getState().activeProjectId)
+          window.dispatchEvent(new CustomEvent('nodeterm:reveal-file', { detail: { path: abs } }))
+        else
+          window.dispatchEvent(
+            new CustomEvent('nodeterm:toast', {
+              detail: { kind: 'error', message: `Open this card's project to reveal ${abs}` }
+            })
+          )
+        return
+      }
+      onOpenFileRef.current?.({ path: abs, projectId: id, ssh: r.ssh })
+    }
+    const onMissing = (token: string, miss: { tried: string[]; unverified?: UnverifiedPath[] }): void => {
+      window.dispatchEvent(
+        new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: fileMissMessage(token, miss) } })
+      )
+    }
     term.registerLinkProvider(createUrlLinkProvider(term, openUrl))
+    term.registerLinkProvider(
+      createFileLinkProvider(term, {
+        getCwd,
+        getLiveCwd,
+        lookup,
+        activate: openFile,
+        convention: pathConvention
+      })
+    )
     if (term.element) {
       cleanups.push(
         installLinkClickFallback(term, term.element, {
-          getCwd: () => undefined,
-          lookup: () => Promise.resolve({ exists: false, dir: false }),
-          activateFile: () => {},
+          getCwd,
+          getLiveCwd,
+          lookup,
+          activateFile: openFile,
+          onMissing,
           openUrl,
-          fileEnabled: () => false
+          fileEnabled,
+          convention: pathConvention
         }).dispose
       )
+      // Right-click stays URL-only here: the canvas node's file rows (download, reveal in the OS,
+      // open a terminal) act on the active project, which may not be this card's.
       cleanups.push(
         installLinkContextMenu(term, term.element, {
           getCwd: () => undefined,
@@ -263,15 +416,31 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
       )
     }
 
+    // MIRROR TerminalNode's copy-on-select (issue #759): same helper, same live setting read, same
+    // quiet clipboard path. This xterm is created and disposed by this one effect (no park), so the
+    // per-mount `cleanups` is its whole lifetime.
+    cleanups.push(
+      attachCopyOnSelect(term, {
+        enabled: () => useSettings.getState().settings.copyOnSelect,
+        write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
+      })
+    )
+
     // MIRROR TerminalNode "WRITE-ONLY — `parseOsc52` returns null" — the OSC 52 clipboard-write path.
     // tmux's mouse is ON, so a drag-select in copy-mode emits OSC 52 to this client; this handler
     // writes the system clipboard. `parseOsc52` returns null for a `?` read query so a remote program
     // can never read the local clipboard. Returning true swallows the sequence (also the read query).
+    // MIRROR TerminalNode: a RELAY tab's writes are refused (osc52-policy.ts).
+    const osc52Notice = createOsc52Notice()
     term.parser.registerOscHandler(52, (data) => {
       const text = parseOsc52(data)
       if (text !== null) {
-        window.nodeTerminal.clipboard.writeText(text)
-        copy.notifyCopy(text)
+        handleOsc52Write(text, session.source, {
+          write: (t) => window.nodeTerminal.clipboard.writeText(t),
+          notifyCopied: (t) => copy.notifyCopy(t),
+          shouldNotify: osc52Notice,
+          toast: dispatchOsc52Toast
+        })
       }
       return true
     })
@@ -285,6 +454,17 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // digit addressing an open project, AND app-first: under terminal-first the digit belongs to
     // the PTY), which `liveProjectJumpTarget` + the policy decide for both surfaces.
     term.attachCustomKeyEventHandler((e) => {
+      // MIRROR TerminalNode: ⌘+ / ⌘− / ⌘0 step the NODE's own font size (issue #915) when opted
+      // in. The modal renders `spawn.terminalFontSize`, so the step lands on both views at once.
+      const fontZoom = terminalFontZoomAction(e, {
+        enabled: useSettings.getState().settings.terminalFontZoomKeys,
+        isMac: isMacPlatform()
+      })
+      if (fontZoom) {
+        e.preventDefault()
+        requestTerminalFontZoom(nodeId, fontZoom)
+        return false
+      }
       const ownsProjectJump =
         terminalShortcutPolicy() !== 'terminal-first' && liveProjectJumpTarget(e) !== null
       // MIRROR TerminalNode's registryOwns — but with `kanbanOpen: true` ALWAYS: the modal only
@@ -513,7 +693,17 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // A paste came from this window, which already has focus.
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     term.focus()
-    term.paste(paths.join(' ') + ' ')
+    // Same receipt as the canvas node (TerminalNode.insertFiles): attached only once the pane
+    // shows it.
+    const st = useAgentStatus.getState().byId[nodeId]
+    const paneAgent = spawn.agentId ?? st?.agentId
+    pasteWithImageReceipt(
+      term,
+      paths.join(' ') + ' ',
+      paths,
+      agentProcessInPane(paneAgent, st) ? paneAgent : undefined,
+      pasteReceipt.report
+    )
   }
 
   const onDrop = async (e: React.DragEvent) => {
@@ -561,6 +751,11 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
           {copy.feedback.label}
         </div>
       )}
+      {pasteReceipt.receipt && (
+        <div className={`term-paste-pill${pasteReceipt.receipt.ok ? '' : ' term-paste-pill--warn'}`}>
+          {pasteReceipt.receipt.text}
+        </div>
+      )}
       {searchOpen && (
         <FindBar
           query={search.query}
@@ -573,7 +768,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
           onClose={onCloseSearch}
         />
       )}
-      <div ref={hostRef} className="kanban-modal__term" />
+      <div ref={hostRef} className="kanban-modal__term" {...{ [FONT_ZOOM_NODE_ATTR]: nodeId }} />
       {linkMenu && (
         <ContextMenu
           x={linkMenu.x}

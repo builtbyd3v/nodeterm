@@ -691,3 +691,36 @@ describe('the close leg stands down inside a terminal, off-mac only (#383)', () 
     expect(menuSync).toContain('MENU_ITEM_ID_CLOSE')
   })
 })
+
+// Issue #915 review: the forwarded ⌘0 carries its modifiers, so the renderer can apply the SAME
+// per-platform predicate the terminal font reset uses (⌘ on mac, Ctrl elsewhere) — without them a
+// mac Ctrl+0 cleared a terminal's font override while the browser path would not.
+describe('zoom-actual-size forwards the chord modifiers (#915)', () => {
+  const capture = (over: Partial<KeydownInterceptInput>): unknown[][] => {
+    const calls: unknown[][] = []
+    let handler: ((e: { preventDefault(): void }, i: KeydownInterceptInput) => void) | null = null
+    const win: KeydownInterceptTarget = {
+      webContents: {
+        on: (_event, listener) => {
+          handler = listener
+        },
+        send: (channel, ...args) => {
+          calls.push([channel, ...args])
+        }
+      }
+    }
+    installKeydownIntercepts(win, () => ({ closeNode: [], toggleMarkdown: [] }), true, () => false, () => false)
+    ;(handler as unknown as (e: { preventDefault(): void }, i: KeydownInterceptInput) => void)(
+      { preventDefault: () => undefined },
+      input({ code: 'Digit0', key: '0', ...over })
+    )
+    return calls
+  }
+  it('sends { meta, control } with the zoom-actual-size signal', () => {
+    expect(capture({ meta: true })).toEqual([[IPC.appZoomActualSize, { meta: true, control: false }]])
+    expect(capture({ control: true })).toEqual([[IPC.appZoomActualSize, { meta: false, control: true }]])
+    expect(capture({ meta: true, control: true })).toEqual([
+      [IPC.appZoomActualSize, { meta: true, control: true }]
+    ])
+  })
+})

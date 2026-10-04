@@ -7,6 +7,7 @@
 import type { CanvasNodeState, PendingLaunch, Project, PtyCreateOptions } from '@shared/types'
 import type { HeadlessLaunchFailure, HeadlessLaunchResult } from '@shared/headless-launch'
 import { HEADLESS_COLS, HEADLESS_ROWS, localNodePtyOptions } from '@shared/node-pty-options'
+import { COLD_OPEN_RUN_HINT } from './coldOpen'
 
 export type RunVerbPlan =
   | 'nothing-queued'
@@ -33,7 +34,11 @@ export function planRunVerb(input: {
   if (input.projectActive) {
     if (input.hasWriter) return 'mounted'
     // `after` is required by the type, but the launch comes out of hand-editable project JSON.
-    const waitsOnDeps = (input.pending.after?.length ?? 0) > 0
+    // A pull request wait (`--after-pr`) is a dependency too: the mount does not fire it. So is a
+    // success wait (`--after-success`), whose stations are normally in `after` as well — checked on
+    // its own because a hand-edited file need not keep the two in step.
+    const waitsOnDeps =
+      (input.pending.after?.length ?? 0) > 0 || !!input.pending.afterPr || !!input.pending.afterSuccess
     return input.pending.manualOnly || waitsOnDeps ? 'refuse-not-mounted' : 'wait-for-mount'
   }
   return 'headless'
@@ -195,7 +200,7 @@ export async function savePendingAnywhere(
   return env.writeDisk()
 }
 
-const STARTS_ON_VIEW = / — queued; starts when that project is next viewed/
+const STARTS_ON_VIEW = ' — queued; starts when that project is next viewed' + COLD_OPEN_RUN_HINT
 const CLOSED_HINT = / \(that project is closed — reopen it from the welcome screen\)/
 
 /** Failures after which the node's launch is exactly what the cold open left: never claimed

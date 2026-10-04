@@ -25,7 +25,7 @@ hidden tabs.
 
 <a href="https://trendshift.io/repositories/103825?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-103825" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/103825" alt="eneskirca%2Fnodeterm | Trendshift" width="250" height="55"/></a>
 
-[Download](#-download) · [Docs](https://nodeterm.dev/docs) · [Features](#-features) · [Build from source](#-build-from-source) · [Architecture](#-architecture) · [License](#-license)
+[Download](#-download) · [Docs](https://nodeterm.dev/docs) · [Features](#-features) · [Build from source](#-build-from-source) · [Architecture](#-architecture) · [Sponsor](#sponsor) · [License](#-license)
 
 </div>
 
@@ -239,6 +239,43 @@ curl -fsSL https://raw.githubusercontent.com/eneskirca/nodeterm/main/scripts/uni
 The full inventory of what nodeterm writes where (and what the script keeps, like the
 `.nodeterm/` canvas folders inside your own repos) is documented in
 [docs/uninstall.md](docs/uninstall.md).
+
+## Sponsor
+
+nodeterm is an indie project, built with Claude across several Claude accounts — about
+**$2,000 a month** to keep running. There are **10 Founding Sponsor spots** at $200/month:
+your logo goes in this grid and on [nodeterm.dev](https://nodeterm.dev), and your feature
+requests go first.
+
+<p align="center">
+  <b>0 of 10 spots taken</b> · <a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04">Become a Founding Sponsor →</a>
+</p>
+
+<!-- Taking a spot: replace one open cell (in order, top-left first) with
+       <td align="center" width="20%"><a href="SPONSOR_URL"><img src="docs/assets/sponsors/SPONSOR.svg" alt="SPONSOR NAME" width="136" /></a></td>
+     The logo needs a transparent background that reads on GitHub's light AND dark themes (or wrap it in a <picture>
+     with a prefers-color-scheme: dark <source>). Bump the "N of 10 spots taken" line in the same edit. The spots are sold through a Stripe
+     payment link limited to 10 payments: it deactivates itself when the tenth is taken (existing subscriptions keep
+     renewing). If a sponsor cancels, raise the limit by one to reopen their spot. -->
+<table>
+  <tr>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+  </tr>
+  <tr>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+  </tr>
+</table>
+
+Prefer a smaller amount, need an invoice, or want a different arrangement? Write to
+support@nodeterm.dev — and a ⭐ helps too.
 
 ## 🛠 Build from source
 

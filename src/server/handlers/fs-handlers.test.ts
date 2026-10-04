@@ -95,6 +95,26 @@ describe('server fs handlers', () => {
     )
   })
 
+  // Custom alert sounds (issue #289): the SAME core handlers serve desktop and the Server Edition,
+  // and the stored file lives in THIS core's data dir — the browser's own path means nothing here.
+  it('saves, reads back and clears a custom alert sound in the data dir', async () => {
+    const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE'), Buffer.alloc(20)])
+    expect(await call(IPC.filesSaveAlertSound, 'done', 'ding.wav', wav.toString('base64'))).toEqual({
+      ok: true,
+      name: 'ding.wav'
+    })
+    expect(fs.readdirSync(path.join(dir, 'sounds'))).toEqual(['done.sound'])
+    expect(await call(IPC.filesReadAlertSound, 'done')).toBe(wav.toString('base64'))
+    expect(await call(IPC.filesClearAlertSound, 'done')).toBe(true)
+    expect(await call(IPC.filesReadAlertSound, 'done')).toBeNull()
+  })
+
+  it('never reads a path the caller names — an unknown kind is null', async () => {
+    fs.writeFileSync(path.join(dir, 'secret.wav'), 'RIFFxxxxWAVE')
+    expect(await call(IPC.filesReadAlertSound, '../secret')).toBeNull()
+    expect(await call(IPC.filesReadAlertSound, path.join(dir, 'secret.wav'))).toBeNull()
+  })
+
   it('quickOpen lists files under the root', async () => {
     fs.writeFileSync(path.join(dir, 'q.txt'), 'x')
     const files = (await call(IPC.filesQuickOpen, dir)) as string[]

@@ -4,6 +4,7 @@ import type { TextDeliveryResult } from '../shared/text-delivery'
 // ordinary traffic through a replacement connection.
 
 import net from 'net'
+import fs from 'fs'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { randomUUID } from 'crypto'
 // The REAL scheduler, immune to vi.useFakeTimers (which patches the global, not this module's
@@ -33,9 +34,14 @@ import {
   type CaptureResult,
   type KillSessionResult,
   type ExecuteLaunchResult,
-  type ListSessionsResult
+  type ListSessionsResult,
+  type ShutdownResult
 } from '../session-host/protocol'
 import { resolveSessionHostScript, spawnSessionHost } from './session-host-launcher'
+
+/** How long a host launch waits for the first staging of a new version (copy + hash + smoke run)
+ *  before launching from the installed binary instead. */
+export const STAGED_RUNTIME_WAIT_MS = 45_000
 import { latestClaimSize, type SizeClaim } from './pty-size'
 import { isTerminalReport } from './terminal-reports'
 import type { PreparedAgentLaunch } from './agent-launch'
@@ -54,6 +60,51 @@ export interface SessionSubscriber {
 }
 
 export const SESSION_HOST_REQUEST_TIMEOUT_MS = 10_000
+/** A `shutdown` ends every session (each kill confirmed by the host within its own 20 s bound),
+ *  so it gets a longer deadline than an ordinary request. */
+export const SHUTDOWN_REQUEST_TIMEOUT_MS = 45_000
+
+export type HostUpdateInspection =
+  | { running: false }
+  | { running: true; sessions: string[]; shutdown: boolean }
+
+export type HostShutdownOutcome =
+  | { kind: 'no-host' }
+  | { kind: 'unsupported' }
+  | { kind: 'shut-down'; ended: string[] }
+  | { kind: 'failed'; error: string }
+  | { kind: 'unconfirmed'; error: string }
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM: the pid exists but belongs to someone else — still alive as far as a lock goes.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Bounded wait for a host that answered `shutdown` to be gone: its state file removed (it deletes
+ *  it on the way out) AND, when its pid is known, that pid no longer running. */
+async function waitForHostExit(
+  statePath: string,
+  pid: number | null,
+  waitMs: number
+): Promise<boolean> {
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    let stateGone = false
+    try {
+      fs.statSync(statePath)
+    } catch (error) {
+      stateGone = (error as NodeJS.ErrnoException).code === 'ENOENT'
+    }
+    if (stateGone && (pid === null || !pidAlive(pid))) return true
+    if (Date.now() >= deadline) return false
+    await sleep(100)
+  }
+}
 
 const RECONNECT_DELAYS_MS = [50, 100, 250, 500, 1_000, 2_000] as const
 const RECONNECT_REPAINT_PREFIX = '\x1b[3J\x1b[2J\x1b[H'
@@ -245,6 +296,17 @@ export class SessionHostClient {
    *  size. On a host that predates it, the size this client last requested IS the pty's size as
    *  long as this is the host's only connection — the common case, and the one issue #914 is. */
   private hostGeometryEvents = false
+  /** The current connection negotiated `shutdown` (issue #829): only then may prepare-for-update
+   *  ask the host to end every session and exit. An older host lacks it, and the app then falls
+   *  back to the manual steps — never to killing the host itself. */
+  private hostShutdownFeature = false
+  /** The pid the host published in its state file for the current connection. Read only to
+   *  confirm a shutdown actually ended the process. */
+  private hostPid: number | null = null
+  /** Latched once a `shutdown` was sent: the app is about to quit for an update, and a reconnect
+   *  must not LAUNCH a fresh host (which would re-lock the install directory). Cleared again only
+   *  when the host answered that it could not end everything and is still serving. */
+  private shutDownForUpdate = false
   /** Monotonic activity clock for `SizeClaim.recency`. */
   private claimClock = 0
   private nextId = 1
@@ -271,8 +333,32 @@ export class SessionHostClient {
       resourcesPath?: string | null
       appPath?: string | null
       repoRoot?: string | null
+      /** Stage (or reuse) a host runtime outside the install directory. Absent = legacy launch. */
+      stageRuntime?: (script: string) => Promise<{ exe: string; script: string } | null>
     }
   ) {}
+
+  /** A staged host crashed on start this app run: launch from the installed binary from now on. */
+  private stagedRuntimeDisabled = false
+
+  /** The relocated runtime to launch the host from (Windows; `session-host-runtime.ts`), or null
+   *  for the legacy launch. Bounded: a staging that has not finished in time is not waited for —
+   *  it keeps running and serves the next launch. */
+  private async stagedRuntimeFor(script: string): Promise<{ exe: string; script: string } | null> {
+    const stage = this.deps.stageRuntime
+    if (!stage || this.stagedRuntimeDisabled) return null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        stage(script).catch(() => null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), STAGED_RUNTIME_WAIT_MS)
+        })
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
 
   bundleAvailable(): boolean {
     return (
@@ -377,6 +463,9 @@ export class SessionHostClient {
   }
 
   private async ensureConnected(): Promise<void> {
+    if (this.shutDownForUpdate) {
+      throw new Error('session-host was shut down to prepare for an update; restart nodeterm')
+    }
     // A newly authenticated socket is visible while its reconnect restoration is still running.
     // The barrier wins over the raw socket check so no later request can overtake replay.
     if (this.connecting) return this.connecting
@@ -418,7 +507,16 @@ export class SessionHostClient {
     // A host that is ALREADY starting needs no second one. Spawning anyway is not harmful (it
     // exits on the exclusive-create lock), but it is a process per create during the window this
     // wait exists for — see `hostIsStarting`.
-    if (!this.hostIsStarting()) spawnSessionHost(script, this.deps.userDataDir)
+    if (!this.hostIsStarting()) {
+      const staged = await this.stagedRuntimeFor(script)
+      // Staging can take seconds on the first launch of a new version; re-ask so a host another
+      // process started meanwhile is not doubled.
+      if (!staged || !this.hostIsStarting()) {
+        spawnSessionHost(script, this.deps.userDataDir, staged, () => {
+          this.stagedRuntimeDisabled = true
+        })
+      }
+    }
     let lastPublicationError: Error | null = null
     const waitStartedAt = Date.now()
     for (let attempt = 0; ; attempt++) {
@@ -510,6 +608,7 @@ export class SessionHostClient {
       const helloId = this.nextId++
       let protocolVersion: 1 | 2 | null = null
       let geometryEvents = false
+      let shutdownFeature = false
       const finish = (ok: boolean, trailing: SessionHostFrame[] = []): void => {
         if (settled) return
         settled = true
@@ -523,6 +622,8 @@ export class SessionHostClient {
             failHandshake(new Error('session-host hello did not negotiate a protocol version'))
             return
           }
+          this.hostShutdownFeature = shutdownFeature
+          this.hostPid = Number.isInteger(identity.state.pid) ? identity.state.pid : null
           this.attachSocket(socket, protocolVersion, geometryEvents)
           for (const frame of trailing) this.handleFrame(socket, frame)
         } else {
@@ -619,6 +720,7 @@ export class SessionHostClient {
             protocolVersion = negotiated
             const features = (frame.result as HelloResult | undefined)?.features
             geometryEvents = Array.isArray(features) && features.includes('geometry')
+            shutdownFeature = Array.isArray(features) && features.includes('shutdown')
             finish(true, frames.slice(index + 1))
           } else {
             failHandshake(new Error(`session-host hello rejected: ${frame.error}`))
@@ -842,7 +944,8 @@ export class SessionHostClient {
   private async request<T>(
     request: SessionHostRequestBody,
     onSuccess?: (result: T, socket: net.Socket) => void,
-    onSent?: () => void
+    onSent?: () => void,
+    timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS
   ): Promise<T> {
     // A peer-initiated close races the client's own 'close' event: a cached socket can look live
     // here while the peer already hung up, and a frame written into that gap fails (EPIPE) for
@@ -863,7 +966,7 @@ export class SessionHostClient {
       const socket = this.socket
       if (!socket) throw new Error('session-host: not connected')
       try {
-        return await this.requestOnSocket(socket, request, onSuccess, onSent)
+        return await this.requestOnSocket(socket, request, onSuccess, onSent, timeoutMs)
       } catch (error) {
         if (!(error instanceof SessionHostRequestNotDeliveredError)) throw error
         if (attempt + 1 >= SESSION_HOST_RESEND_ATTEMPTS) throw error.original
@@ -878,7 +981,8 @@ export class SessionHostClient {
     socket: net.Socket,
     request: SessionHostRequestBody,
     onSuccess?: (result: T, socket: net.Socket) => void,
-    onSent?: () => void
+    onSent?: () => void,
+    timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS
   ): Promise<T> {
     if (this.socket !== socket || socket.destroyed) {
       return Promise.reject(
@@ -911,7 +1015,7 @@ export class SessionHostClient {
         this.pending.delete(id)
         pending.reject(deadline)
         this.dropSocket(socket, deadline, true)
-      }, SESSION_HOST_REQUEST_TIMEOUT_MS)
+      }, timeoutMs)
       pending.timer.unref?.()
       this.pending.set(id, pending)
       // The send is deferred one REAL event-loop turn (immune to fake timers — the deadline above
@@ -1792,6 +1896,87 @@ export class SessionHostClient {
     state.appliedPaused = false
     state.appliedSize = null
     this.stopReconnectIfIdle()
+  }
+
+  /**
+   * Prepare-for-update, step 1 (issue #829): is a host running, which sessions does it hold, and
+   * can it shut itself down? NEVER launches a host: with no published state file there is nothing
+   * to ask, and starting one just to answer would re-lock the very directory the update needs.
+   */
+  async inspectForUpdate(): Promise<HostUpdateInspection> {
+    const paths = sessionHostPaths(this.deps.userDataDir)
+    const identity = readExistingSessionHostIdentity(paths.statePath, {
+      expectedEndpoint: paths.endpoint,
+      expectedTokenPath: paths.tokenPath
+    })
+    if (identity.kind === 'absent') return { running: false }
+    await this.ensureConnected()
+    const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' })
+    return { running: true, sessions: result.names, shutdown: this.hostShutdownFeature }
+  }
+
+  /**
+   * Prepare-for-update, final step (issue #829): ask the host to end every session's process tree
+   * and exit, then confirm the process is actually gone. Every answer short of `shut-down` leaves
+   * the caller with a host that may still hold the install directory, so it must not quit and
+   * claim the update can proceed. There is deliberately no fallback that kills the host process:
+   * a host without the feature answers `unsupported`, and the caller shows the manual steps.
+   */
+  async shutdownForUpdate(options: { timeoutMs?: number; exitWaitMs?: number } = {}): Promise<
+    HostShutdownOutcome
+  > {
+    const paths = sessionHostPaths(this.deps.userDataDir)
+    const identity = readExistingSessionHostIdentity(paths.statePath, {
+      expectedEndpoint: paths.endpoint,
+      expectedTokenPath: paths.tokenPath
+    })
+    if (identity.kind === 'absent') return { kind: 'no-host' }
+    await this.ensureConnected()
+    if (!this.hostShutdownFeature) return { kind: 'unsupported' }
+    const socket = this.socket
+    if (!socket) return { kind: 'unconfirmed', error: 'session-host connection lost' }
+    const pid = this.hostPid
+    // Latched BEFORE the request leaves, so a connection that drops mid-shutdown cannot reconnect
+    // into a freshly launched host. The request itself goes on the socket already in hand (never
+    // through `request`, whose reconnect path the latch now refuses) and is never resent.
+    this.shutDownForUpdate = true
+    let result: ShutdownResult
+    try {
+      result = await this.requestOnSocket<ShutdownResult>(
+        socket,
+        { cmd: 'shutdown' },
+        undefined,
+        undefined,
+        options.timeoutMs ?? SHUTDOWN_REQUEST_TIMEOUT_MS
+      )
+    } catch (error) {
+      const message =
+        error instanceof SessionHostRequestNotDeliveredError
+          ? error.original.message
+          : asError(error).message
+      // The host's own refusal: it said which sessions it could not end, and it is still serving.
+      if (/could not end|already shutting down|shutdown requires/.test(message)) {
+        this.shutDownForUpdate = false
+        return { kind: 'failed', error: message }
+      }
+      // The frame provably never left: nothing was asked, the host is untouched and still usable.
+      if (error instanceof SessionHostRequestNotDeliveredError) {
+        this.shutDownForUpdate = false
+        return { kind: 'unconfirmed', error: message }
+      }
+      // A lost reply or a timeout says nothing about whether the host is still up. The latch STAYS
+      // set: if it did exit, a reconnect must not launch a replacement that re-locks the install
+      // directory. The caller tells the user to quit and check; a restart clears the latch.
+      return { kind: 'unconfirmed', error: message }
+    }
+    const gone = await waitForHostExit(paths.statePath, pid, options.exitWaitMs ?? 10_000)
+    if (!gone) {
+      return {
+        kind: 'unconfirmed',
+        error: 'the session host reported its sessions ended but has not exited yet'
+      }
+    }
+    return { kind: 'shut-down', ended: result.ended }
   }
 
   async listSessions(): Promise<string[]> {

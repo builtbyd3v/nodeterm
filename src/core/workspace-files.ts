@@ -10,7 +10,7 @@ import {
 } from '../shared/node-exec'
 import { sanitizeViews } from '../shared/kanban-views'
 import { CLOSED_SESSIONS_CAP } from '../shared/types'
-import type { BridgeLink, CanvasNodeState, ClosedSessionEntry, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
+import type { BridgeLink, CanvasNodeState, ClosedSessionEntry, HandedOffTo, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
 import { projectCapabilityFields, readProjectCapabilities } from '../shared/project-capabilities'
 import { loadedAgentBrowserPartition } from '../shared/browser-partition'
 import { sanitizeProjectIcon, type ProjectIcon } from '../shared/project-icon'
@@ -209,6 +209,9 @@ export interface IndexEntryV3 {
   closed?: boolean
   /** Set alongside `closed: true` — see `Project.closedAt`. */
   closedAt?: number
+  /** See `HandedOffTo`. Index-only; never written to the shared project.json. Validated on every
+   *  load (`sanitizeHandedOffTo`): workspace.json is hand-editable input. */
+  handedOffTo?: HandedOffTo
   /** MACHINE-LOCAL camera for a ref'd project (local folder or ssh). Where this user is looking is
    *  not something a repo shares — the file's copy churned the git diff on every pan. */
   viewport?: Viewport
@@ -365,6 +368,8 @@ export function projectToFile(
   const layouts = sanitizeLayouts(p.layouts)
   // Same two-seam rule for the board (see `sanitizeKanban`).
   const kanban = p.kanban ? sanitizeKanban(p.kanban) : undefined
+  const bridges = p.bridges ? sanitizeLinks(p.bridges) : undefined
+  const ropes = p.ropes ? sanitizeLinks(p.ropes) : undefined
   return {
     version: 1,
     rev,
@@ -375,8 +380,9 @@ export function projectToFile(
     viewport: framingViewport(nodes),
     nodes,
     ...(icon ? { icon } : {}),
-    ...(p.bridges ? { bridges: p.bridges } : {}),
-    ...(p.ropes ? { ropes: p.ropes } : {}),
+    // The same two-seam rule as the board: what we write is what the next machine trusts.
+    ...(bridges ? { bridges } : {}),
+    ...(ropes ? { ropes } : {}),
     ...(p.defaultPermissionMode ? { defaultPermissionMode: p.defaultPermissionMode } : {}),
     // Strict-normalised (literal true only, known keys only) and omitted when off — an off
     // capability adds no bytes to the committed file. `capabilityAck` is deliberately NOT here:
@@ -404,6 +410,27 @@ export function validKanban(k: unknown): k is ProjectKanban {
 
 const isRecord = (x: unknown): x is Record<string, unknown> =>
   !!x && typeof x === 'object' && !Array.isArray(x)
+
+/**
+ * A project's `bridges` / `ropes` as they may be ADMITTED. Both come straight out of the git-shared,
+ * hand-editable project file, and every reader treats them as `BridgeLink[]`: the canvas restores
+ * them with `ropes.map((r) => ropeEdge(r.id, r.source, r.target))`, the server-change merge maps
+ * their ids, the headless factory spreads them. A non-list, or one `null` entry, threw on project
+ * load. The rule: a non-list is dropped; an entry that is not an object with non-empty string `id`,
+ * `source` and `target` is dropped; every other field an entry carries round-trips untouched.
+ *
+ * Returns the SAME array when nothing needed repair, so a clean file is never rewritten, and
+ * `undefined` for a non-list. Used on every seam `sanitizeKanban` is.
+ */
+export function sanitizeLinks(links: unknown): BridgeLink[] | undefined {
+  if (!Array.isArray(links)) return undefined
+  const ok = (l: unknown): l is BridgeLink =>
+    isRecord(l) &&
+    typeof l.id === 'string' && l.id !== '' &&
+    typeof l.source === 'string' && l.source !== '' &&
+    typeof l.target === 'string' && l.target !== ''
+  return links.every(ok) ? (links as BridgeLink[]) : links.filter(ok)
+}
 
 /**
  * The board as it may be ADMITTED: `validKanban`'s shape rule plus the per-entry repairs a
@@ -574,6 +601,21 @@ export function sanitizeLoadedClosedSessions(x: unknown): ClosedSessionEntry[] |
   })
 }
 
+/** The index is hand-editable: keep only a well-formed record. A record without a finite `at` is
+ *  not one at all (the project is an ordinary SSH project again); a malformed or oversized
+ *  `hostId`/`projectId` is dropped on its own, which still leaves the guard in place. */
+export function sanitizeHandedOffTo(v: unknown): HandedOffTo | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at)) return undefined
+  const ok = (s: unknown, max: number): s is string => typeof s === 'string' && s.length > 0 && s.length <= max
+  return {
+    at: o.at,
+    ...(ok(o.hostId, 64) ? { hostId: o.hostId } : {}),
+    ...(ok(o.projectId, 128) ? { projectId: o.projectId } : {})
+  }
+}
+
 /**
  * The shared file plus this machine's own half of the project.
  *
@@ -591,6 +633,8 @@ export function fileToProject(
     ssh?: Project['ssh']
     closed?: boolean
     closedAt?: number
+    /** This machine's "Share with team" handover record (index entry only; never from the file). */
+    handedOffTo?: HandedOffTo
     /** This machine's camera. Falls back to the file's legacy one (a pre-change file, or a
      *  teammate's) and then to a frame that puts the canvas on screen. */
     viewport?: Viewport
@@ -621,6 +665,8 @@ export function fileToProject(
   // in as well as out is what stops workspace.json accumulating orphans forever.
   const layoutViewports = pruneLayoutViewports(base.layoutViewports, layouts)
   const kanban = sanitizeKanban(f.kanban)
+  const bridges = f.bridges ? sanitizeLinks(f.bridges) : undefined
+  const ropes = f.ropes ? sanitizeLinks(f.ropes) : undefined
   return {
     id: base.id,
     // A project whose stored name IS its own path is one this machine (or a teammate's) created
@@ -644,8 +690,9 @@ export function fileToProject(
         base.id
       )
     ),
-    ...(f.bridges ? { bridges: f.bridges } : {}),
-    ...(f.ropes ? { ropes: f.ropes } : {}),
+    // Hostile input like the rest of the file: a non-list or a malformed entry threw on load.
+    ...(bridges ? { bridges } : {}),
+    ...(ropes ? { ropes } : {}),
     ...(defaultAccountId ? { defaultAccountId } : {}),
     ...(f.defaultPermissionMode ? { defaultPermissionMode: f.defaultPermissionMode } : {}),
     // The file is hostile input: only a literal `true` under a known key survives the read
@@ -657,6 +704,9 @@ export function fileToProject(
     ...(base.ssh ? { ssh: base.ssh } : {}),
     ...(base.closed ? { closed: true } : {}),
     ...(base.closedAt ? { closedAt: base.closedAt } : {}),
+    // Machine-local, from the index entry ONLY: a file field named `handedOffTo` is not this
+    // machine's record and is never read.
+    ...(base.handedOffTo ? { handedOffTo: base.handedOffTo } : {}),
     // Machine-local, from the index entry ONLY: a file field named `capabilityAck` is a forgery
     // attempt (the shared file cannot carry this machine's consent) and is simply never read.
     ...(base.capabilityAck ? { capabilityAck: base.capabilityAck } : {}),
@@ -760,7 +810,10 @@ export function splitWorkspace(
     const header = {
       id: p.id, name: p.name, color: p.color,
       ...(p.closed ? { closed: true } : {}),
-      ...(p.closedAt ? { closedAt: p.closedAt } : {})
+      ...(p.closedAt ? { closedAt: p.closedAt } : {}),
+      // On the header so even an unavailable placeholder's entry keeps it: the guard must hold
+      // while the server is unreachable too.
+      ...(p.handedOffTo ? { handedOffTo: p.handedOffTo } : {})
     }
     // The machine-local half of a REF'd project (a folder or an ssh endpoint), which used to ride
     // the shared file: this user's camera and this machine's default managed account. Deliberately

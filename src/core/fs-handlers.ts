@@ -4,6 +4,8 @@ import type { CorePlatform } from './platform'
 import * as fsOps from './fs-ops'
 import { saveUpload } from './uploads'
 import { saveCanvasImage } from './canvas-images'
+import { clearAlertSound, readAlertSound, saveAlertSound } from './alert-sounds'
+import type { AlertSoundKind } from '../shared/alert-sound'
 import { IPC } from '../shared/ipc'
 import type { DownloadTicket } from '../shared/types'
 
@@ -76,6 +78,20 @@ export function registerFsHandlers(
         name,
         dataBase64
       })
+  )
+  // Custom alert sounds (issue #289): bytes in, a FIXED per-kind file under this core's data dir
+  // out. Reads and deletes take only a kind, so no caller can aim them at another file. See
+  // core/alert-sounds.ts for the validation.
+  platform.handle(
+    IPC.filesSaveAlertSound,
+    (kind: AlertSoundKind, name: string, dataBase64: string) =>
+      saveAlertSound(platform.userDataDir, kind, name, dataBase64)
+  )
+  platform.handle(IPC.filesReadAlertSound, (kind: AlertSoundKind) =>
+    readAlertSound(platform.userDataDir, kind)
+  )
+  platform.handle(IPC.filesClearAlertSound, (kind: AlertSoundKind) =>
+    clearAlertSound(platform.userDataDir, kind)
   )
   platform.handle(IPC.filesDownloadTicket, (p: string) =>
     deps.issueDownloadTicket ? deps.issueDownloadTicket(p) : Promise.resolve(null)

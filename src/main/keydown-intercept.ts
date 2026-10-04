@@ -425,6 +425,18 @@ export function installKeydownIntercepts(
     // it either.
     if (decision.action === 'close-node' && isCloseSuspended()) return
     event.preventDefault()
-    if (decision.action) win.webContents.send(keydownInterceptChannel(decision.action))
+    if (!decision.action) return
+    // ⌘0 carries its modifiers (issue #915 review): the renderer reads them to decide whether the
+    // chord is the platform's terminal-font reset (⌘ on mac, Ctrl elsewhere — never both) before
+    // falling back to canvas zoom-to-100%. The decision above accepts `meta || control`, so without
+    // them a mac Ctrl+0 was indistinguishable from ⌘0 there.
+    if (decision.action === 'zoom-actual-size') {
+      win.webContents.send(keydownInterceptChannel(decision.action), {
+        meta: input.meta,
+        control: input.control
+      })
+      return
+    }
+    win.webContents.send(keydownInterceptChannel(decision.action))
   })
 }

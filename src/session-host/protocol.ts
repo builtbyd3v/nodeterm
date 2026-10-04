@@ -128,6 +128,12 @@ export type SessionHostRequest =
   | { id: number; cmd: 'detach'; name: string }
   | { id: number; cmd: 'listSessions' }
   | { id: number; cmd: 'ping' }
+  /** Prepare-for-update (issue #829): end EVERY session's process tree through the ordinary kill
+   *  path, reply, then exit the host process. Accepted only from a connection that negotiated the
+   *  `shutdown` feature at hello — an older client never sends it, and an older host answers
+   *  `unknown command` without the app ever asking. Persisted node metadata is the APP's and is
+   *  never touched here: nodes stay on the canvas and cold-restore on the next launch. */
+  | { id: number; cmd: 'shutdown' }
 
 /** Host → client response to a request, correlated by `id`. */
 export type SessionHostResponse =
@@ -199,8 +205,16 @@ export interface AttachResult {
   geometry?: { cols: number; rows: number }
 }
 /** Additive, independently negotiated capabilities (see the `hello` request). */
-export type SessionHostFeature = 'geometry'
-export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry']
+export type SessionHostFeature = 'geometry' | 'shutdown'
+export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry', 'shutdown']
+
+/** `result` of a successful `shutdown`: the session names whose process trees were ended. The
+ *  host exits right after this reply is flushed. A shutdown that could not confirm every kill
+ *  answers `ok: false` naming the sessions it could not end, and the host STAYS UP (accepting
+ *  attaches again) — a partial shutdown must never be reported as done. */
+export interface ShutdownResult {
+  ended: string[]
+}
 
 /** `result` of a v2 `hello`. `features` is absent from a host that predates feature negotiation. */
 export interface HelloResult {

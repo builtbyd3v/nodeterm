@@ -1,8 +1,12 @@
 import { memo, useState } from 'react'
-import type { KanbanCardMeta, KanbanLabel, KanbanPriority } from '@shared/types'
+import type { KanbanCardMeta, KanbanColumnCategory, KanbanLabel, KanbanPriority } from '@shared/types'
 import { useAgentStatus } from '../../state/agentStatus'
 import { AccountChip, useAccountChip } from '../AccountChip'
+import { LiveLinkChip, showsLiveLinks } from '../LiveLinkChip'
+import type { SessionSource } from '../../session/session'
+import { useWatchLinks } from '../../state/watchLinks'
 import { ContextMeter } from '../ContextMeter'
+import { transcriptSessionFor } from '../../lib/transcriptSession'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { NodeIconView } from '../NodeIcon'
 import { LabelChips } from './LabelChips'
@@ -14,6 +18,9 @@ import type { IssueRef } from '@shared/github-issue-ref'
 import { IssueRefChip } from '../IssueRefChip'
 import { cardBadge } from '../../lib/kanbanStatusChips'
 import { cardAssignees } from '@shared/kanban-labels'
+import { TeamProgressChip } from '../TeamProgressChip'
+import type { TeamStation } from '../../lib/teamProgress'
+import { cardShowsOverdue, sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 
 const PRIO_COLOR = Object.fromEntries(PRIORITIES.map((p) => [p.id, p.color])) as Record<KanbanPriority, string>
 
@@ -37,11 +44,21 @@ interface SessionCardProps {
   pullFreshness?: PullStatusFreshness
   /** The session's `#N` chip (it was started on a GitHub issue): open that issue. */
   onOpenIssue?: (ref: IssueRef) => void
+  /** The stations this session opened (lib/teamProgress) — a stable array per card. */
+  team?: readonly TeamStation[]
+  /** A station row in the team list was picked: go to that node on the canvas. */
+  onTravel?: (nodeId: string) => void
+  /** The lifecycle category of the column the card sits in (lib/cardRedundancy reads it). */
+  columnCategory?: KanbanColumnCategory
+  /** The session the board's PROJECT belongs to (`projectSessionSource`). Only a local one shows
+   *  this machine's LIVE chip, or counts a link as card detail — a relay tab's node with the same
+   *  id is another machine's terminal (R57). */
+  liveLinkSource: SessionSource | null
 }
 
 export const SessionCard = memo(function SessionCard({
   session, meta, labels = [], onOpen, onDragStart, onDragEnd, onDropAt, onContext, pulls,
-  pullFreshness = 'fresh', onOpenIssue
+  pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, liveLinkSource
 }: SessionCardProps) {
   // THIS card's agent status, subscribed per card rather than threaded down from the board.
   // KanbanView used to hold `useAgentStatus((s) => s.byId)` and pass the map through the column:
@@ -50,6 +67,8 @@ export const SessionCard = memo(function SessionCard({
   // (see its loopSig comment) and StatusAwareMiniMap demonstrates: subscribe where the value is
   // read, so the re-render is confined to the one thing that changed.
   const status = useAgentStatus((s) => s.byId[session.id])
+  // The card's meter follows the same session rule as the node and the card modal.
+  const cardTranscript = transcriptSessionFor({ live: status?.sessionId, persisted: session.spawn.agentSessionId, cwd: session.spawn.cwd })
   // The board is the canvas's other view of the same node (CONTRIBUTING), so the card carries the
   // node header's account chip from the same helper — created-with account, else what the session
   // was observed running as.
@@ -70,12 +89,24 @@ export const SessionCard = memo(function SessionCard({
   const stickyPreview = session.kind === 'sticky' ? (session.text ?? '').trim() : ''
   const assignees = cardAssignees(meta)
   const due = meta?.dueAt
-  const overdue = due !== undefined && due < Date.now()
+  // Not in a done/closed column: the column already settled it (lib/cardRedundancy). The card
+  // modal's Due strip still says "Overdue".
+  const overdue = cardShowsOverdue(due, Date.now(), columnCategory)
+  // The session name is usually the title (agent titles auto-track it) — then the chip repeats it.
+  const sessionName = status?.session && !sessionNameRepeatsTitle(status.session, session.title)
+    ? status.session
+    : undefined
   const priority = meta?.priority
+  // A live link counts as detail: "this terminal is being broadcast" must show on the card whatever
+  // else it has to say (a primitive selector — see LiveLinkChip).
+  const showLive = showsLiveLinks(liveLinkSource)
+  const hasLiveLink = useWatchLinks(
+    (s) => showLive && session.kind === 'terminal' && (s.byNode[session.id]?.length ?? 0) > 0
+  )
   // The account chip counts as detail in its own right: a card whose only thing to say is "this
   // one is on the other Claude login" is exactly the card that must say it.
   const hasDetail =
-    !!status?.sessionId || !!status?.session || !!accountChip || stickyPreview.includes('\n')
+    !!status?.sessionId || !!sessionName || !!accountChip || hasLiveLink || stickyPreview.includes('\n')
   return (
     <div
       className={`kanban-card kanban-card--session${dragging ? ' kanban-card--dragging' : ''}${
@@ -122,6 +153,9 @@ export const SessionCard = memo(function SessionCard({
         <span className="kanban-card__title">{session.title}</span>
         {session.kind === 'terminal' && onOpenIssue && (
           <IssueRefChip issueRef={session.issueRef} onOpen={onOpenIssue} />
+        )}
+        {session.kind === 'terminal' && team && team.length > 0 && onTravel && (
+          <TeamProgressChip stations={team} onTravel={onTravel} />
         )}
         {session.kind === 'sticky' && <span className="kanban-card__kind">note</span>}
         {session.kind === 'browser' && <span className="kanban-card__kind">web</span>}
@@ -199,11 +233,12 @@ export const SessionCard = memo(function SessionCard({
             <span className="kanban-card__stickytext">{stickyPreview}</span>
           ) : (
             <>
-              <ContextMeter sessionId={status?.sessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
+              <ContextMeter sessionId={cardTranscript.sessionId ?? null} fromLaunchId={cardTranscript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
               <AccountChip chip={accountChip} />
-              {status?.session && (
-                <span className="kanban-card__session" title={status.session}>
-                  {status.session}
+              <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-card__live" />
+              {sessionName && (
+                <span className="kanban-card__session" title={sessionName}>
+                  {sessionName}
                 </span>
               )}
             </>
