@@ -20,6 +20,16 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 
 const install = (extra = {}) => installCursorHooks({ hooksJson, scriptPath: script, findCursorAgent: found, platform: 'linux', ...extra })
+// One open, then fstat + read on the same descriptor: no check-then-use window on the path.
+const snapshot = (p: string): { text: string; mode: number; mtimeMs: number } => {
+  const fd = fs.openSync(p, 'r')
+  try {
+    const st = fs.fstatSync(fd)
+    return { text: fs.readFileSync(fd, 'utf8'), mode: st.mode, mtimeMs: st.mtimeMs }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
 const ours = (entries: { command?: string }[]) => entries.filter((e) => e.command?.includes('.nodeterm/agent-hooks/cursor.sh'))
 
 describe('installCursorHooks', () => {
@@ -38,17 +48,18 @@ describe('installCursorHooks', () => {
       expect(cfg.hooks[ev]).toHaveLength(1)
       expect(cfg.hooks[ev][0].timeout).toBe(5)
     }
-    expect(fs.statSync(script).mode & 0o111).not.toBe(0)
-    expect(fs.readFileSync(script, 'utf8')).toContain('/hook/cursor')
+    const sh = snapshot(script)
+    expect(sh.mode & 0o111).not.toBe(0)
+    expect(sh.text).toContain('/hook/cursor')
   })
 
   it('is idempotent: a second install writes nothing and never duplicates', () => {
     install()
-    const before = fs.readFileSync(hooksJson, 'utf8')
-    const mtime = fs.statSync(hooksJson).mtimeMs
+    const before = snapshot(hooksJson)
     install()
-    expect(fs.readFileSync(hooksJson, 'utf8')).toBe(before)
-    expect(fs.statSync(hooksJson).mtimeMs).toBe(mtime)
+    const after = snapshot(hooksJson)
+    expect(after.text).toBe(before.text)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
   })
 
   it("keeps the user's own hooks and keys, on our events and on others", () => {
@@ -108,7 +119,7 @@ describe('installCursorHooks', () => {
 
   it('removes only our entries, and never creates the file', () => {
     removeCursorHooks({ hooksJson })
-    expect(fs.existsSync(hooksJson)).toBe(false)
+    expect(fs.readdirSync(home)).not.toContain('.cursor')
     const mine = { command: 'mine' }
     fs.mkdirSync(path.dirname(hooksJson), { recursive: true })
     fs.writeFileSync(hooksJson, JSON.stringify({ version: 1, hooks: { stop: [mine] } }))
