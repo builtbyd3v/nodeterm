@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import path from 'path'
 import { tmpdir } from 'os'
 import { RemoteHooks } from './remote-hooks'
+import { allRemote } from './remote-hooks.test-plan'
 import { CURSOR_HOOK_EVENTS } from '@shared/agents/hook-events'
 
 let home: string
@@ -32,7 +33,7 @@ async function install(remoteDir = `${home}/.nodeterm`) {
     const r = spawnSync('/bin/sh', ['-c', command], { input: stdin, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } })
     if (r.error) throw r.error
     return { code: r.status ?? 1, stdout: r.stdout }
-  } })
+  } }, allRemote)
   await rh['installCursorRemote'](conn, '/fixture.sock', home, remoteDir)
   return calls
 }

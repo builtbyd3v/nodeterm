@@ -95,6 +95,16 @@ describe('scoped guest — terminals', () => {
     })
     expect(d.allow && (d.args?.[0] as Record<string, unknown>).sshRemote).toBeUndefined()
   })
+  it('forces requireRemote for an SSH project, whatever the guest sent (never a local shell)', () => {
+    const remote = { ...deps(), projectIsRemote: (p: string) => p === 'alpha' }
+    const d = decideScopedAccess('alpha', remote, IPC.ptyCreate, [
+      { persistKey: 'a1', cols: 1, rows: 1, requireRemote: false }
+    ])
+    expect(d.allow && (d.args?.[0] as Record<string, unknown>).requireRemote).toBe(true)
+    // A local shared project is left exactly as the guest asked.
+    const local = decide(IPC.ptyCreate, { persistKey: 'a1', cols: 1, rows: 1 })
+    expect(local.allow && (local.args?.[0] as Record<string, unknown>).requireRemote).toBeUndefined()
+  })
   it('judges session-id and persistKey verbs by the node', () => {
     expect(allowed(IPC.ptyWrite, 'sA', 'ls\r')).toBe(true)
     expect(allowed(IPC.ptyWrite, 'sB', 'ls\r')).toBe(false)

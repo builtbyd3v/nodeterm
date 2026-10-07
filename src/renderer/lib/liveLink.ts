@@ -30,38 +30,51 @@ export const ROLE_LABEL: Record<WatchLinkRole, string> = {
   commenter: 'Can watch and chat',
   controller: 'Can watch, chat and type'
 }
-/** The role's name, as the create dialog's choice and the popover's role line say it (spec §2.1). */
+/** The role's name, as the popover's role line and the chat drawer say it (spec §2.1). */
 export const ROLE_NAME: Record<WatchLinkRole, string> = {
   viewer: 'Viewer',
   commenter: 'Commenter',
   controller: 'Control'
 }
 
-/** A `Record` over the shared TTL list, so a TTL added there fails to compile here until it is named. */
-const TTL_LABEL: Record<WatchLinkTtl, string> = {
-  900: '15 min',
-  3600: '1 hour',
-  28800: '8 hours',
-  86400: '24 hours',
-  0: 'Unlimited'
+/** The create dialog's role menu, Figma's "can view ▾" shape: the row reads as a sentence ("Anyone
+ *  with the link can watch"), and the hint says what the choice grants. Control's hint names the
+ *  password, because picking it adds the password row. */
+export const ROLE_CHOICE: Record<WatchLinkRole, { label: string; hint: string }> = {
+  viewer: { label: 'can watch', hint: 'Sees the terminal' },
+  commenter: { label: 'can chat', hint: 'Watches and chats with you' },
+  controller: { label: 'can type', hint: 'Also types, with a password' }
 }
+/** The roles in the menu's order (spec §2.1: viewer, commenter, controller). */
+export const ROLE_ORDER: readonly WatchLinkRole[] = ['viewer', 'commenter', 'controller']
+
+/** A `Record` over the shared TTL list, so a TTL added there fails to compile here until it is named.
+ *  Lowercase: the row reads "Expires in 1 hour". */
+const TTL_LABEL: Record<WatchLinkTtl, string> = {
+  900: 'in 15 minutes',
+  3600: 'in 1 hour',
+  28800: 'in 8 hours',
+  86400: 'in 24 hours',
+  0: 'never'
+}
+/** Unlimited's hint in the expiry menu. */
+export const UNLIMITED_NOTE = 'This link works until you stop it.'
 /** The create dialog's expiry choices — derived from the list core validates against (H19), so
- *  Unlimited (`0`) comes last, as the shared list orders it. */
-export const TTL_OPTIONS: { value: WatchLinkTtl; label: string }[] = WATCH_LINK_TTLS.map((value) => ({
+ *  Unlimited (`0`, "never") comes last, as the shared list orders it. */
+export const TTL_OPTIONS: { value: WatchLinkTtl; label: string; hint?: string }[] = WATCH_LINK_TTLS.map((value) => ({
   value,
-  label: TTL_LABEL[value]
+  label: TTL_LABEL[value],
+  ...(value === 0 ? { hint: UNLIMITED_NOTE } : {})
 }))
 export const DEFAULT_TTL: WatchLinkTtl = DEFAULT_WATCH_LINK_TTL
-/** Under the expiry choices while Unlimited is picked. */
-export const UNLIMITED_NOTE = 'This link works until you stop it.'
 
-/** Always on the create dialog. "Everything this terminal shows" is meant literally (R64/M3): the
- *  stream is the terminal CLIENT's output, so tmux's session chooser (`C-b s` / `C-b w`, a live
- *  preview of every session — other projects' agents included) or a session switch inside it reaches
- *  viewers as well. */
+/** Always on the create dialog, whatever the role. "Everything this terminal shows" is meant
+ *  literally (R64/M3): the stream is the terminal CLIENT's output, so tmux's session chooser
+ *  (`C-b s` / `C-b w`, a live preview of every session — other projects' agents included) or a
+ *  session switch inside it reaches viewers as well. Short on purpose: the dialog is a row of
+ *  choices, and a paragraph here buried the choices; the facts it must carry are all still in it. */
 export const LIVE_LINK_EXPOSURE =
-  "Anyone with the link sees everything this terminal shows: what's on screen now, anything printed later (tokens, env dumps), anything you scroll back to — and, if you open tmux's session chooser or switch sessions in it, those other sessions too."
-export const LIVE_LINK_WARNING = `${LIVE_LINK_EXPOSURE} They can't type or resize it.`
+  'Viewers see everything this terminal shows: scrollback, anything printed later (tokens too), and other tmux sessions if you open the session chooser or switch sessions.'
 export const KICK_NOTE =
   'Kick ends this connection; anyone with the link can rejoin. Stop sharing to end it for everyone.'
 /** After `KICK_NOTE` for a viewer who is controlling: a kicked controller who has the password unlocks
@@ -74,15 +87,15 @@ export function kickNote(v: { controlling: boolean }): string {
 
 /**
  * The create dialog's typing warning while Control is picked — spec §2.7, with the machine named
- * truthfully. It is shown UNDER `LIVE_LINK_EXPOSURE`, never instead of it: a Control link is a
+ * truthfully. It is shown ABOVE `LIVE_LINK_EXPOSURE`, never instead of it: a Control link is a
  * Commenter link plus typing, so anyone with the link alone still watches. Three parts so the
  * dialog can stress the middle one ("and"); `controlWarningText` is the same words as one string.
  */
 export function controlWarning(machine: string): [string, string, string] {
   return [
-    'Anyone with this link ',
+    'With this link ',
     'and',
-    ` the password can type in this terminal as you. In a shell that means running any command on ${machine}; in an agent session, giving the agent any instruction. Send the password separately from the link.`
+    ` the password, anyone can type here as you: run any command on ${machine}, or instruct the agent in this terminal.`
   ]
 }
 export function controlWarningText(machine: string): string {

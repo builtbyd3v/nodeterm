@@ -3,6 +3,7 @@ import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from 
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
+import type { AgentIntegrationsSettings } from './agent-integrations'
 // Types shared across the main, preload, and renderer processes.
 
 import { TABBAR_HEIGHT_PX } from './window-chrome-metrics'
@@ -559,6 +560,12 @@ export interface CanvasNodeState {
   sshRemoteTmux?: boolean
   /** editor-only: when true (SSH-project editors), reads/writes go to the project's remote fs via `sshFs`. */
   sshFs?: boolean
+  /**
+   * Run nodes only (a terminal node that runs a `.vscode/launch.json` configuration): folder,
+   * configuration, device, reload-on-save. Git-shared and hand-editable — read through
+   * `normalizeRunConfig` (@shared/run-config) on every load AND save.
+   */
+  runConfig?: import('./run-config').RunNodeConfig
   // sticky-only
   text?: string
   /**
@@ -2258,6 +2265,11 @@ export interface Settings {
    *  strands a live session gets their canvas back without downgrading the app. Neither value ever
    *  admits a forged token. */
   hookIdentityStrict?: boolean
+  /** Agent-integration consent (issue #744, `@shared/agent-integrations`): which agents nodeterm
+   *  may integrate with by writing into their user-owned global config (status hooks, skills),
+   *  here and per SSH host. Optional and absent from DEFAULT_SETTINGS: absent = a new install that
+   *  has not been asked, which writes NOTHING. Hand-editable, so every reader sanitizes. */
+  agentIntegrations?: AgentIntegrationsSettings
   /** Machine-local waivers for the canvas-control destructive confirm dialog
    *  (@shared/control-confirm). Absent — and absent from DEFAULT_SETTINGS — means "always ask",
    *  which is the pre-feature behavior bit for bit.
@@ -2439,6 +2451,12 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface SettingsApi {
   load(): Promise<Settings>
   save(settings: Settings): Promise<void>
+}
+
+/** Agent-integration consent status (issue #744). The CHOICE rides `settings.agentIntegrations`;
+ *  this only reports what the host's last reconcile did. */
+export interface IntegrationsApi {
+  status(): Promise<import('./agent-integrations').AgentIntegrationsStatus>
 }
 
 /** A downloadable whisper model plus its on-disk status, as returned by `speech.models()`. */
@@ -4212,6 +4230,7 @@ export interface NodeTerminalApi {
   worktree: WorktreeApi
   dialog: DialogApi
   settings: SettingsApi
+  integrations: IntegrationsApi
   speech: SpeechApi
   ssh: SshApi
   sshProject: SshProjectApi
@@ -4237,6 +4256,8 @@ export interface NodeTerminalApi {
   /** "Open recent" — the newest agent conversations in this machine's CLI histories. */
   recentConversations: import('./recent-conversations').RecentConversationsApi
   wallpaper: import('./wallpaper').WallpaperApi
+  /** Run node host side (launch.json, devices, launcher, status, stop, signals, reload on save). */
+  runConfig: import('./run-config').RunConfigApi
   triggers: TriggersApi
   context: ContextApi
   canvas: CanvasApi

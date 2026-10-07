@@ -4,6 +4,13 @@ import { subscribeAgentReplay } from '../../shared/agent-replay-subscription'
 import type { DesktopWallpaper, WallpaperStill } from '../../shared/wallpaper'
 import type { AlertSoundSaveResult } from '../../shared/alert-sound'
 import type { RecentConversationsRequest, RecentConversationsResult } from '../../shared/recent-conversations'
+import type {
+  RunConfigApi,
+  RunDevicesResult,
+  RunEntriesResult,
+  RunStartResult,
+  RunStatus
+} from '../../shared/run-config'
 // WebSocket bridge that reconstructs `window.nodeTerminal` in the browser (Server Edition).
 //
 // Under Electron the preload already defines `window.nodeTerminal`; this module only runs when
@@ -252,6 +259,7 @@ export function buildRealApi(
   | 'projectSetup'
   | 'worktree'
   | 'settings'
+  | 'integrations'
   | 'agent'
   | 'userDataDir'
 > {
@@ -430,6 +438,11 @@ export function buildRealApi(
     save: (s: Settings) => client.request(IPC.settingsSave, s) as Promise<void>
   }
 
+  // REAL: both shells boot the consent lifecycle (core/agent-integrations.ts) and register it.
+  const integrations: NodeTerminalApi['integrations'] = {
+    status: () => client.request(IPC.integrationsStatus) as ReturnType<NodeTerminalApi['integrations']['status']>
+  }
+
   const agent: NodeTerminalApi['agent'] = {
     // Deliberately NOT a request: the server registers no env-snapshot handler (a full host-env
     // dump answerable by any authenticated WS client is the PR #195 leak class at the RPC layer).
@@ -459,7 +472,7 @@ export function buildRealApi(
   // `/worktrees/…` at the filesystem root (the server usually runs as root, and git would create it).
   const userDataDir = (): Promise<string> => client.request(IPC.appUserDataDir) as Promise<string>
 
-  return { pty, workspace, projectSettings, projectSetup, worktree, settings, agent, userDataDir }
+  return { pty, workspace, projectSettings, projectSetup, worktree, settings, integrations, agent, userDataDir }
 }
 
 export function buildGitHubApi(
@@ -1085,6 +1098,24 @@ export function buildWallpaperApi(client: RpcClient): Pick<NodeTerminalApi, 'wal
   }
 }
 
+/** The run node's host side. Real on the Server Edition (`registerRunConfigIpc` runs in the
+ *  server shell): the run happens on the server, so its launch.json, devices and processes are the
+ *  server's — which is the machine the node's terminal runs on. */
+export function buildRunConfigApi(client: RpcClient): Pick<NodeTerminalApi, 'runConfig'> {
+  const r: RunConfigApi = {
+    entries: (dir) => client.request(IPC.runEntries, dir) as Promise<RunEntriesResult>,
+    devices: (refresh) => client.request(IPC.runDevices, refresh) as Promise<RunDevicesResult>,
+    bootDevice: (udid) => client.request(IPC.runBootDevice, udid) as Promise<boolean>,
+    discoverProjects: (dir) => client.request(IPC.runDiscover, dir) as Promise<string[]>,
+    start: (nodeId, config) => client.request(IPC.runStart, nodeId, config) as Promise<RunStartResult>,
+    status: (nodeId) => client.request(IPC.runStatus, nodeId) as Promise<RunStatus>,
+    stop: (nodeId, force) => client.request(IPC.runStop, nodeId, force) as Promise<boolean>,
+    signal: (nodeId, kind) => client.request(IPC.runSignal, nodeId, kind) as Promise<boolean>,
+    watch: (nodeId, dir) => client.request(IPC.runWatch, nodeId, dir) as Promise<void>
+  }
+  return { runConfig: r }
+}
+
 /**
  * Build the `claude` namespace over an RpcClient. `cliCaps` is a REAL handler on the server
  * (`registerClaudeCliIpc` runs in the server shell too), so the browser resolves the very same
@@ -1390,6 +1421,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildWatchLinkApi(client),
     ...buildRecentConversationsApi(client),
     ...buildWallpaperApi(client),
+    ...buildRunConfigApi(client),
     ...buildTriggersApi(client),
     ...buildGitHubApi(client),
     ...buildClaudeAccountsApi(client),

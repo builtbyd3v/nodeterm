@@ -1,6 +1,9 @@
 // Create a live link to one terminal. Opened only through `openLiveLink` (lib/liveLinkEntry): the
 // availability rule and the Pro gate have already run by the time this mounts.
 //
+// Figma's share-dialog shape: one row per choice, each reading as a sentence ("Anyone with the link
+// can watch", "Expires in 1 hour"), the choices in small menus instead of radio lists.
+//
 // The warning is always visible (not a checkbox): the owner must read what a link exposes every
 // time, because "the screen" includes whatever is printed next.
 //
@@ -13,6 +16,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
+import { IconClock, IconClose, IconLock, IconReload, IconUser, IconWeb } from './icons'
+import { MenuSelect } from './MenuSelect'
 import { newControlPassword, PasswordField, useCopied } from './LiveLinkPassword'
 import {
   capUnits,
@@ -20,28 +25,25 @@ import {
   controlWarning,
   controlWarningMachine,
   createErrorMessage,
-  DEFAULT_TTL,
   formatUntil,
   LIVE_LINK_EXPOSURE,
-  LIVE_LINK_WARNING,
   PASSWORD_SEPARATE_NOTE,
   PASSWORD_SHOWN_ONCE,
   passwordProblemText,
-  ROLE_LABEL,
-  ROLE_NAME,
+  ROLE_CHOICE,
+  ROLE_ORDER,
   SAVE_FIRST_MESSAGE,
   TTL_OPTIONS,
-  UNLIMITED_NOTE,
   watchableOnlyWhileOpen,
   watchWhileOpenNote,
   type LiveLinkSurface
 } from '../lib/liveLink'
+import { loadLiveLinkDefaults, saveLiveLinkDefaults } from '../lib/liveLinkDefaults'
 import { stopLiveLinks } from '../lib/liveLinkEntry'
 import { loadIdentity } from '../state/presence'
 import {
   LABEL_MAX,
   stripBidiControls,
-  UNLIMITED_TTL,
   type CreateWatchLinkRequest,
   type WatchLinkRole,
   type WatchLinkTtl
@@ -56,6 +58,20 @@ function ControlWarning({ machine }: { machine: string }): React.JSX.Element {
       <strong>{and}</strong>
       {after}
     </p>
+  )
+}
+
+/** The dialog's head: the node's title and a close button (which every dismissal rule still owns). */
+function DialogHead(p: { title: string; onClose: () => void; disabled?: boolean }): React.JSX.Element {
+  return (
+    <div className="live-dialog__head">
+      <p className="live-dialog__title" title={p.title}>
+        Share “{p.title}”
+      </p>
+      <button type="button" className="live-dialog__close" aria-label="Close" disabled={p.disabled} onClick={p.onClose}>
+        <IconClose />
+      </button>
+    </div>
   )
 }
 
@@ -116,16 +132,22 @@ export function LiveLinkDialogBody(p: {
   now?: number
 }): React.JSX.Element {
   const s = p.state
-  // Ids for aria-describedby: the password's validation line, and why Control is disabled.
+  // The id for aria-describedby: the password's validation line.
   const invalidId = useId()
-  const reasonId = useId()
   // The title is the node's own (git-shared, hand-editable): shown as TEXT, bidi controls stripped.
   const title = stripBidiControls(p.title)
   if (s.phase === 'done') {
     const control = s.role === 'controller'
+    const until = formatUntil(s.expiresAt, p.now ?? Date.now())
     return (
       <div className="confirm live-dialog" onClick={(e) => e.stopPropagation()}>
-        <p className="confirm__msg live-dialog__title">Live link to {title}</p>
+        <DialogHead title={title} onClose={p.onClose} disabled={!!s.stopping} />
+        <p className="live-dialog__status">
+          <span className="live-dialog__dot" aria-hidden="true" />
+          {control
+            ? `Anyone with this link and the password can type until ${until}.`
+            : `Anyone with this link can watch until ${until}.`}
+        </p>
         <div className="live-dialog__url">
           <input
             className="confirm__input"
@@ -135,34 +157,30 @@ export function LiveLinkDialogBody(p: {
             onFocus={(e) => e.currentTarget.select()}
           />
           {/* Keyboard focus lands here once the link exists (D2/M3): Enter copies it. */}
-          <button className="confirm__btn primary" data-autofocus="" onClick={() => p.onCopy?.(s.url)}>
-            {p.copied ? 'Copied!' : 'Copy'}
+          <button className="confirm__btn primary live-dialog__copy" data-autofocus="" onClick={() => p.onCopy?.(s.url)}>
+            {p.copied ? 'Copied!' : 'Copy link'}
           </button>
         </div>
         {control && (
           <>
             <div className="live-dialog__url live-dialog__password">
               <PasswordField value={s.password ?? ''} readOnly />
-              <button className="confirm__btn" onClick={() => p.onCopyPassword?.(s.password ?? '')}>
+              <button className="confirm__btn live-dialog__copy" onClick={() => p.onCopyPassword?.(s.password ?? '')}>
                 {p.passwordCopied ? 'Copied!' : 'Copy password'}
               </button>
             </div>
-            <p className="live-dialog__note live-dialog__note--tight">{PASSWORD_SHOWN_ONCE}</p>
-            <p className="live-dialog__note live-dialog__note--tight">{PASSWORD_SEPARATE_NOTE}</p>
+            <p className="live-dialog__note">
+              {PASSWORD_SHOWN_ONCE} {PASSWORD_SEPARATE_NOTE}
+            </p>
           </>
         )}
-        <p className="live-dialog__note">
-          {control
-            ? `Anyone with this link and the password can type until ${formatUntil(s.expiresAt, p.now ?? Date.now())}.`
-            : `Anyone with this link can watch until ${formatUntil(s.expiresAt, p.now ?? Date.now())}.`}
-        </p>
         {s.error && (
           <p className="live-dialog__error" role="alert">
             {s.error}
           </p>
         )}
-        <div className="confirm__actions">
-          <button className="confirm__btn danger" disabled={!!s.stopping} onClick={() => p.onStop(s.linkId)}>
+        <div className="confirm__actions live-dialog__actions">
+          <button className="confirm__btn live-dialog__stop" disabled={!!s.stopping} onClick={() => p.onStop(s.linkId)}>
             Stop sharing
           </button>
           <button className="confirm__btn" onClick={p.onClose}>
@@ -176,81 +194,94 @@ export function LiveLinkDialogBody(p: {
   const problem = control ? passwordProblemText(s.password) : null
   // Nothing nags an empty field: Create is disabled, which says enough until something is typed.
   const showProblem = s.password !== '' && problem !== null
+  const roleOptions = ROLE_ORDER.map((r) => {
+    const off = r === 'controller' && !!p.controlUnsupported
+    return { value: r, label: ROLE_CHOICE[r].label, hint: off ? CONTROL_UNSUPPORTED_REASON : ROLE_CHOICE[r].hint, disabled: off }
+  })
+  // Picking Control fills a generated password when there is none yet, so the fast path is two
+  // clicks; a password already there (typed, or kept from switching away and back) is left alone.
+  const setRole = (role: WatchLinkRole): void =>
+    p.onChange({ ...s, role, password: role === 'controller' && s.password === '' ? newControlPassword() : s.password })
   return (
     <div className="confirm live-dialog" onClick={(e) => e.stopPropagation()}>
-      <p className="confirm__msg live-dialog__title">Share a live link to {title}</p>
-      <fieldset className="live-dialog__group" disabled={s.busy}>
-        <legend>Viewers</legend>
-        {(['viewer', 'commenter', 'controller'] as const).map((r) => {
-          const off = r === 'controller' && !!p.controlUnsupported
-          return (
-            <label key={r} className={off ? 'live-dialog__off' : undefined} title={off ? CONTROL_UNSUPPORTED_REASON : undefined}>
-              <input
-                type="radio"
-                name="live-role"
-                checked={s.role === r}
-                disabled={off}
-                aria-describedby={off ? reasonId : undefined}
-                onChange={() => p.onChange({ ...s, role: r })}
-              />{' '}
-              {ROLE_NAME[r]} <span className="live-dialog__hint">· {ROLE_LABEL[r]}</span>
-            </label>
-          )
-        })}
-        {p.controlUnsupported && (
-          <p className="live-dialog__reason" id={reasonId}>
-            {CONTROL_UNSUPPORTED_REASON}
-          </p>
-        )}
-      </fieldset>
-      {control && (
-        <div className="live-dialog__pw">
-          Password
-          <div className="live-dialog__url live-dialog__password">
+      <DialogHead title={title} onClose={p.onClose} disabled={s.busy} />
+      <div className="live-dialog__rows">
+        <div className="live-dialog__row">
+          <span className="live-dialog__icon" aria-hidden="true">
+            <IconWeb />
+          </span>
+          <span className="live-dialog__row-label">Anyone with the link</span>
+          {/* Keyboard focus lands here when the dialog opens (D2/M3): keys stay inside the dialog
+              instead of reaching the canvas behind it. */}
+          <MenuSelect
+            label="Anyone with the link"
+            value={s.role}
+            options={roleOptions}
+            onChange={setRole}
+            disabled={s.busy}
+            autoFocus
+          />
+        </div>
+        {control && (
+          <div className="live-dialog__row live-dialog__password">
+            <span className="live-dialog__icon" aria-hidden="true">
+              <IconLock />
+            </span>
+            <span className="live-dialog__row-label">Password</span>
             <PasswordField
               value={s.password}
               disabled={s.busy}
               describedBy={showProblem ? invalidId : undefined}
               onChange={(v) => p.onChange({ ...s, password: v })}
             />
-            <button className="confirm__btn" disabled={s.busy} onClick={() => p.onChange({ ...s, password: newControlPassword() })}>
-              Generate
+            <button
+              type="button"
+              className="live-dialog__icon-btn"
+              aria-label="New password"
+              title="Generate a new password"
+              disabled={s.busy}
+              onClick={() => p.onChange({ ...s, password: newControlPassword() })}
+            >
+              <IconReload />
             </button>
           </div>
-          {showProblem && (
-            <p className="live-dialog__invalid" id={invalidId}>
-              {problem}
-            </p>
-          )}
+        )}
+        {showProblem && (
+          <p className="live-dialog__invalid" id={invalidId}>
+            {problem}
+          </p>
+        )}
+        <div className="live-dialog__row">
+          <span className="live-dialog__icon" aria-hidden="true">
+            <IconClock />
+          </span>
+          <span className="live-dialog__row-label">Expires</span>
+          <MenuSelect
+            label="Expires"
+            value={s.ttl}
+            options={TTL_OPTIONS}
+            onChange={(ttl: WatchLinkTtl) => p.onChange({ ...s, ttl })}
+            disabled={s.busy}
+          />
         </div>
-      )}
-      <fieldset className="live-dialog__group" disabled={s.busy}>
-        <legend>Ends after</legend>
-        {TTL_OPTIONS.map((o) => (
-          <label key={o.value}>
-            <input type="radio" name="live-ttl" checked={s.ttl === o.value} onChange={() => p.onChange({ ...s, ttl: o.value })} />{' '}
-            {o.label}
-          </label>
-        ))}
-      </fieldset>
-      {s.ttl === UNLIMITED_TTL && <p className="live-dialog__note live-dialog__note--tight">{UNLIMITED_NOTE}</p>}
-      <label className="live-dialog__label">
-        Shown to viewers as
-        {/* Keyboard focus lands here when the dialog opens (D2/M3): keys stay inside the dialog
-            instead of reaching the canvas behind it. */}
-        <input
-          className="confirm__input"
-          data-autofocus=""
-          maxLength={LABEL_MAX}
-          value={s.label}
-          disabled={s.busy}
-          onChange={(e) => p.onChange({ ...s, label: e.target.value })}
-        />
-      </label>
-      {/* Always what WATCHING exposes. A Control link is watched by anyone with the link alone, so
-          its warning keeps that (minus "They can't type", which it makes false) and adds typing. */}
-      <p className="live-dialog__warning">{control ? LIVE_LINK_EXPOSURE : LIVE_LINK_WARNING}</p>
+        <label className="live-dialog__row live-dialog__label">
+          <span className="live-dialog__icon" aria-hidden="true">
+            <IconUser />
+          </span>
+          <span className="live-dialog__row-label">Viewers see you as</span>
+          <input
+            className="confirm__input"
+            maxLength={LABEL_MAX}
+            value={s.label}
+            disabled={s.busy}
+            onChange={(e) => p.onChange({ ...s, label: e.target.value })}
+          />
+        </label>
+      </div>
+      {/* Typing first (the stronger claim), then what WATCHING exposes, which holds for every role:
+          a Control link is watched by anyone with the link alone. */}
       {control && <ControlWarning machine={p.controlMachine ?? controlWarningMachine(null)} />}
+      <p className="live-dialog__exposure">{LIVE_LINK_EXPOSURE}</p>
       {p.whileOpenNote && <p className="live-dialog__note">{p.whileOpenNote}</p>}
       {s.error && (
         <p className="live-dialog__error" role="alert">
@@ -308,15 +339,20 @@ export function LiveLinkDialog({
   onUpgrade?: () => void
   onClose: () => void
 }): React.JSX.Element {
-  const [state, setState] = useState<DialogState>(() => ({
-    phase: 'form',
-    role: 'viewer',
-    ttl: DEFAULT_TTL,
-    label: capUnits(loadIdentity()?.name ?? '', LABEL_MAX),
-    password: '',
-    busy: false,
-    error: null
-  }))
+  // Opens on the role and expiry of the last link this person created (lib/liveLinkDefaults). A
+  // remembered Control opens with a fresh generated password, as picking it does.
+  const [state, setState] = useState<DialogState>(() => {
+    const d = loadLiveLinkDefaults()
+    return {
+      phase: 'form',
+      role: d.role,
+      ttl: d.ttl,
+      label: capUnits(loadIdentity()?.name ?? '', LABEL_MAX),
+      password: d.role === 'controller' ? newControlPassword() : '',
+      busy: false,
+      error: null
+    }
+  })
   // The latest state for the async steps (a closure would see the render that started them).
   const stateRef = useRef(state)
   stateRef.current = state
@@ -362,7 +398,7 @@ export function LiveLinkDialog({
       live = false
     }
   }, [nodeId])
-  // D2/M3: focus lands in the dialog — the label on open, Copy once created — so keys stay inside
+  // D2/M3: focus lands in the dialog — the role menu on open, Copy link once created — so keys stay inside
   // it (a bare-key canvas command could otherwise fire behind the overlay).
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -434,6 +470,7 @@ export function LiveLinkDialog({
     try {
       const r = await window.nodeTerminal.watchLink.create(req)
       if (r.ok) {
+        saveLiveLinkDefaults({ role: form.role, ttl: form.ttl })
         setState({
           phase: 'done',
           role: form.role,

@@ -382,6 +382,16 @@ export const IPC = {
   wallpaperListStills: 'wallpaper:list-stills',
   wallpaperLoad: 'wallpaper:load',
   wallpaperImport: 'wallpaper:import',
+  // Run node (core/run-service.ts): launch.json entries, devices, launcher, status, stop, signals.
+  runEntries: 'run:entries',
+  runDevices: 'run:devices',
+  runBootDevice: 'run:boot-device',
+  runDiscover: 'run:discover',
+  runStart: 'run:start',
+  runStatus: 'run:status',
+  runStop: 'run:stop',
+  runSignal: 'run:signal',
+  runWatch: 'run:watch',
   // Trigger nodes (issue #493): machine-local arm/disarm + the card's status/run-now.
   triggersArm: 'triggers:arm',
   triggersDisarm: 'triggers:disarm',
@@ -532,6 +542,9 @@ export const IPC = {
   filesSaveAlertSound: 'files:save-alert-sound',
   filesReadAlertSound: 'files:read-alert-sound',
   filesClearAlertSound: 'files:clear-alert-sound',
+  /** Agent-integration consent (issue #744): the last reconcile's report (what is enabled,
+   *  declined, and which user-edited files were kept). Host-only. */
+  integrationsStatus: 'integrations:status',
   settingsLoad: 'settings:load',
   settingsSave: 'settings:save',
   sshList: 'ssh:list',

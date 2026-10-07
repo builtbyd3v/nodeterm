@@ -31,6 +31,9 @@ import {
   agentLaunchProgram,
   resumeCommand,
   hasHooksOverSsh,
+  CHAT_CAPABLE,
+  TYPED_INPUT_CAPABLE,
+  typesChatInput,
   readsScreenDialogs,
   queuesInputWhileWorking,
   LOCAL_ONLY_HOOK_AGENTS,
@@ -588,6 +591,17 @@ describe('cursor NEEDS YOU, SSH hooks and lost stop', () => {
       const ev = normalizeFor('cursor', { nodeId: 'n', agentId: 'cursor', payload: { hook_event_name, tool_use_id: 't' } })
       expect(ev?.state === 'blocked', hook_event_name).toBe(false)
     }
+  })
+})
+
+describe('typed chat input (TYPED_INPUT_CAPABLE)', () => {
+  it('types only for claude — M-Enter is a measured newline there and unmeasured anywhere else', () => {
+    expect(typesChatInput('claude')).toBe(true)
+    for (const id of CHAT_CAPABLE.filter((a) => a !== 'claude')) expect(typesChatInput(id)).toBe(false)
+  })
+
+  it('is a subset of CHAT_CAPABLE: only the chat view types', () => {
+    for (const id of TYPED_INPUT_CAPABLE) expect((CHAT_CAPABLE as readonly string[]).includes(id)).toBe(true)
   })
 })
 

@@ -1,6 +1,6 @@
 {
   "name": "node-terminal",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
@@ -189,7 +189,7 @@
     "ssh2": "^1.17.0",
     "tweetnacl": "^1.0.3",
     "ws": "^8.21.3",
-    "zustand": "^4.5.7"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",

@@ -7,7 +7,6 @@ import {
   CHAT_NOT_SENT_MESSAGE,
   chipView,
   formatUntil,
-  LIVE_LINK_WARNING,
   watchableOnlyWhileOpen,
   commentFromChat,
   createErrorMessage,
@@ -41,7 +40,9 @@ import {
   PASSWORD_SEPARATE_NOTE,
   PASSWORD_SHOWN_ONCE,
   passwordProblemText,
+  ROLE_CHOICE,
   ROLE_NAME,
+  ROLE_ORDER,
   typingNames,
   UNLIMITED_NOTE,
   CONTROL_CHANGE_UNSAVED_MESSAGE,
@@ -290,10 +291,20 @@ describe('fixed lists (H19)', () => {
     expect(TTL_OPTIONS.map((o) => o.value)).toEqual([...WATCH_LINK_TTLS])
     // Unlimited is offered, last.
     expect(TTL_OPTIONS.map((o) => o.value)).toEqual([900, 3600, 28800, 86400, 0])
-    expect(TTL_OPTIONS.map((o) => o.label)).toEqual(['15 min', '1 hour', '8 hours', '24 hours', 'Unlimited'])
+    // Lowercase: the dialog's row reads "Expires in 1 hour" / "Expires never".
+    expect(TTL_OPTIONS.map((o) => o.label)).toEqual(['in 15 minutes', 'in 1 hour', 'in 8 hours', 'in 24 hours', 'never'])
+    // Only "never" carries a hint, and it is the Unlimited note.
+    expect(TTL_OPTIONS.map((o) => o.hint)).toEqual([undefined, undefined, undefined, undefined, UNLIMITED_NOTE])
     expect(DEFAULT_TTL).toBe(DEFAULT_WATCH_LINK_TTL)
     expect(ROLE_LABEL).toEqual({ viewer: 'Can watch', commenter: 'Can watch and chat', controller: 'Can watch, chat and type' })
     expect(ROLE_NAME).toEqual({ viewer: 'Viewer', commenter: 'Commenter', controller: 'Control' })
+    // The create dialog's menu: the verb the link grants, in the spec's order; Control names its password.
+    expect(ROLE_ORDER).toEqual(['viewer', 'commenter', 'controller'])
+    expect(ROLE_CHOICE).toEqual({
+      viewer: { label: 'can watch', hint: 'Sees the terminal' },
+      commenter: { label: 'can chat', hint: 'Watches and chats with you' },
+      controller: { label: 'can type', hint: 'Also types, with a password' }
+    })
   })
 })
 
@@ -379,8 +390,11 @@ describe('watchableOnlyWhileOpen', () => {
 // R64/M3: the stream follows the terminal CLIENT, so tmux's chooser and a session switch reach viewers.
 describe('the create warning', () => {
   it("names tmux's session chooser and a session switch", () => {
-    expect(LIVE_LINK_WARNING).toMatch(/session chooser/)
-    expect(LIVE_LINK_WARNING).toMatch(/switch sessions/)
+    expect(LIVE_LINK_EXPOSURE).toMatch(/session chooser/)
+    expect(LIVE_LINK_EXPOSURE).toMatch(/switch sessions/)
+    // What every viewer gets, said in the one sentence the dialog keeps for it.
+    expect(LIVE_LINK_EXPOSURE).toMatch(/scrollback/)
+    expect(LIVE_LINK_EXPOSURE).toMatch(/anything printed later/)
   })
 })
 
@@ -390,18 +404,16 @@ describe('Control and Unlimited copy', () => {
   it('is the exact ruled text', () => {
     // Spec §2.7, with the machine named truthfully (ruling 2): this machine's noun for a local node…
     expect(controlWarningText(controlWarningMachine(null))).toBe(
-      'Anyone with this link and the password can type in this terminal as you. In a shell that means running any command on this computer; in an agent session, giving the agent any instruction. Send the password separately from the link.'
+      'With this link and the password, anyone can type here as you: run any command on this computer, or instruct the agent in this terminal.'
     )
     // …and the host for an SSH project's node, whose shell runs there.
     expect(controlWarningText(controlWarningMachine({ user: 'ada', host: 'build.example' }))).toBe(
-      'Anyone with this link and the password can type in this terminal as you. In a shell that means running any command on ada@build.example; in an agent session, giving the agent any instruction. Send the password separately from the link.'
+      'With this link and the password, anyone can type here as you: run any command on ada@build.example, or instruct the agent in this terminal.'
     )
     // "and" is the emphasised word: the parts say where it is.
     expect(controlWarning('x')[1]).toBe('and')
     expect(controlWarning('x').join('')).toBe(controlWarningText('x'))
-    // A Control link still shows what WATCHING exposes — without the sentence a Control link makes false.
-    expect(LIVE_LINK_WARNING.startsWith(LIVE_LINK_EXPOSURE)).toBe(true)
-    expect(LIVE_LINK_WARNING).toBe(`${LIVE_LINK_EXPOSURE} They can't type or resize it.`)
+    // The exposure sentence is shown for every role, Control included, so it must not claim nobody types.
     expect(LIVE_LINK_EXPOSURE).not.toMatch(/type/)
     expect(PASSWORD_SEPARATE_NOTE).toBe('Send the password separately from the link.')
     expect(PASSWORD_SHOWN_ONCE).toBe(

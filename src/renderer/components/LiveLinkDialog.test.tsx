@@ -10,13 +10,13 @@ import {
   controlWarningText,
   formatClock,
   LIVE_LINK_EXPOSURE,
-  LIVE_LINK_WARNING,
   PASSWORD_SEPARATE_NOTE,
   PASSWORD_SHOWN_ONCE,
   SAVE_FIRST_MESSAGE,
   STOP_FAILED_MESSAGE,
   UNLIMITED_NOTE
 } from '../lib/liveLink'
+import { LIVE_LINK_DEFAULTS_KEY } from '../lib/liveLinkDefaults'
 import { resetDialogStack } from './dialog-stack'
 import { pinNeutralMachineNoun } from '../lib/testMachineNoun'
 
@@ -31,18 +31,20 @@ const body = (state: Parameters<typeof LiveLinkDialogBody>[0]['state'], extra: P
 const FORM = { phase: 'form', role: 'viewer', ttl: 3600, label: 'Ada', password: '', busy: false, error: null } as const
 
 describe('LiveLinkDialogBody', () => {
-  it('shows the role and expiry choices with the defaults, and the warning always', () => {
+  it('reads as rows: who can use the link, when it expires, the name — and the exposure always', () => {
     const html = body(FORM)
-    expect(html).toContain('Share a live link to build')
-    expect(html).toContain('Can watch')
-    expect(html).toContain('Can watch and chat')
-    for (const t of ['15 min', '1 hour', '8 hours', '24 hours', 'Unlimited']) expect(html).toContain(t)
-    // Spec §2.7: Viewer / Commenter / Control.
-    for (const r of ['Viewer', 'Commenter', 'Control']) expect(html).toContain(r)
-    // Neither Control's password field nor its warning until Control is picked.
+    expect(html).toContain('Share “build”')
+    expect(html).toContain('Anyone with the link')
+    expect(html).toContain('can watch')
+    expect(html).toContain('Expires')
+    expect(html).toContain('in 1 hour')
+    expect(html).toContain('Viewers see you as')
+    // The menus are closed: their choices are not on the page until one is opened.
+    expect(html).not.toContain('menu-select__menu')
+    // Neither Control's password row nor its warning until Control is picked.
     expect(html).not.toContain('live-dialog__password')
-    expect(html).not.toContain('can type in this terminal as you')
-    expect(html).toContain(LIVE_LINK_WARNING.replace(/'/g, '&#x27;'))
+    expect(html).not.toContain('live-dialog__warning')
+    expect(html).toContain(LIVE_LINK_EXPOSURE)
     expect(html).toContain('Create live link')
   })
 
@@ -51,7 +53,7 @@ describe('LiveLinkDialogBody', () => {
     const now = new Date(2026, 9, 1, 14, 42, 0).getTime()
     const html = body({ phase: 'done', role: 'viewer', url: 'https://nodeterm.dev/s/x#1.y', linkId: 'x', expiresAt }, { now })
     expect(html).toContain('https://nodeterm.dev/s/x#1.y')
-    expect(html).toContain('Copy')
+    expect(html).toContain('Copy link')
     expect(html).toContain('Stop sharing')
     expect(html).toContain(`Anyone with this link can watch until ${formatClock(expiresAt)}.`)
   })
@@ -67,7 +69,9 @@ describe('LiveLinkDialogBody', () => {
   it('Control: the "and" of the typing warning is bold, and the machine is the one the caller names', () => {
     const html = body({ ...FORM, role: 'controller' }, { controlMachine: 'ada@build.example' })
     expect(html).toContain('<strong>and</strong>')
-    expect(html).toContain('running any command on ada@build.example;')
+    expect(html).toContain('run any command on ada@build.example,')
+    // The exposure stays under it: anyone with the link alone still watches a Control link.
+    expect(html).toContain(LIVE_LINK_EXPOSURE)
   })
 
   it('R63: the "only while open" note shows in the form when the caller has one', () => {
@@ -79,7 +83,7 @@ describe('LiveLinkDialogBody', () => {
     const html = renderToStaticMarkup(
       <LiveLinkDialogBody title={'bu\u202eild'} state={FORM} onChange={noop} onSubmit={noop} onClose={noop} onStop={noop} />
     )
-    expect(html).toContain('Share a live link to build')
+    expect(html).toContain('Share “build”')
   })
 
   it('offers Upgrade only for a not-entitled error AND only when the caller can upgrade (H12, R43)', () => {
@@ -166,6 +170,22 @@ const setLabel = (v: string): void => {
   })
 }
 
+/** A row's menu trigger, by the row's label ("Anyone with the link", "Expires"). */
+const trigger = (row: string): HTMLButtonElement =>
+  document.querySelector<HTMLButtonElement>(`.menu-select__trigger[aria-label^="${row}:"]`)!
+/** An option of the OPEN menu, by its label. */
+const option = (label: string): HTMLButtonElement | undefined =>
+  [...document.querySelectorAll<HTMLButtonElement>('.menu-select__item')].find(
+    (b) => b.querySelector('.menu-select__label')?.textContent === label
+  )
+/** Open a row's menu and pick an option, the way a person does. */
+const choose = (row: string, label: string): void => {
+  click(trigger(row))
+  click(option(label)!)
+}
+const pickRole = (label: 'can watch' | 'can chat' | 'can type'): void => choose('Anyone with the link', label)
+const roleValue = (): string => trigger('Anyone with the link').querySelector('.menu-select__value')!.textContent!
+
 function mount(o: {
   prepare?: () => Promise<string | null>
   onUpgrade?: () => void
@@ -213,13 +233,13 @@ describe('LiveLinkDialog', () => {
     expect(document.querySelector<HTMLInputElement>('.live-dialog__label input')!.value).toBe('x'.repeat(39))
   })
 
-  it('D2/M3: focus lands in the dialog — the label on open, Copy once created', async () => {
+  it('D2/M3: focus lands in the dialog — the role menu on open, Copy link once created', async () => {
     mount()
-    expect(document.activeElement).toBe(document.querySelector('.live-dialog__label input'))
+    expect(document.activeElement).toBe(trigger('Anyone with the link'))
     setLabel('Ada')
     click(btn('Create live link'))
     await flush()
-    expect(document.activeElement).toBe(btn('Copy'))
+    expect(document.activeElement).toBe(btn('Copy link'))
   })
 
   // R63: on a machine with no watcher client for a local node (Windows' session host, tmux off or
@@ -343,18 +363,13 @@ describe('LiveLinkDialog', () => {
     setLabel('Ada')
     click(btn('Create live link'))
     await flush()
-    click(btn('Copy'))
+    click(btn('Copy link'))
     expect(window.nodeTerminal.clipboard.writeText).toHaveBeenCalledWith('https://nodeterm.dev/s/abc#1.k')
   })
 })
 
 // ---- Control and Unlimited (spec 2026-10-03 §2.7, §3) -------------------------------------------
 
-const radio = (text: string): HTMLInputElement =>
-  [...document.querySelectorAll<HTMLLabelElement>('.live-dialog__group label')]
-    .find((l) => l.textContent?.includes(text))!
-    .querySelector('input')!
-const pick = (text: string): void => click(radio(text))
 const pwInput = (): HTMLInputElement | null => document.querySelector<HTMLInputElement>('.live-dialog__password input')
 const typeInto = (input: HTMLInputElement, v: string): void =>
   act(() => {
@@ -362,7 +377,8 @@ const typeInto = (input: HTMLInputElement, v: string): void =>
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 const warnings = (): string[] => [...document.querySelectorAll('.live-dialog__warning')].map((e) => e.textContent ?? '')
-const warning = (): string | null => warnings()[0] ?? null
+const exposure = (): string | null => document.querySelector('.live-dialog__exposure')?.textContent ?? null
+const GENERATED = /^[0-9abcdefghjkmnpqrstvwxyz]{16}$/
 const createWith = (over: Partial<CreateWatchLinkRequest> = {}): CreateWatchLinkResult => ({
   ok: true,
   link: {
@@ -373,34 +389,101 @@ const createWith = (over: Partial<CreateWatchLinkRequest> = {}): CreateWatchLink
   }
 })
 
+describe('LiveLinkDialog — the menus', () => {
+  it('the role menu lists the three roles, each with what it grants, the current one checked', async () => {
+    mount()
+    await flush()
+    click(trigger('Anyone with the link'))
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.menu-select__item')]
+    expect(items.map((b) => b.querySelector('.menu-select__label')!.textContent)).toEqual(['can watch', 'can chat', 'can type'])
+    expect(items.map((b) => b.querySelector('.menu-select__hint')!.textContent)).toEqual([
+      'Sees the terminal',
+      'Watches and chats with you',
+      'Also types, with a password'
+    ])
+    expect(items.map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false'])
+  })
+
+  it('the expiry menu ends on "never", whose hint says it works until stopped', async () => {
+    mount()
+    await flush()
+    click(trigger('Expires'))
+    const labels = [...document.querySelectorAll('.menu-select__item .menu-select__label')].map((e) => e.textContent)
+    expect(labels).toEqual(['in 15 minutes', 'in 1 hour', 'in 8 hours', 'in 24 hours', 'never'])
+    expect(option('never')!.querySelector('.menu-select__hint')!.textContent).toBe(UNLIMITED_NOTE)
+  })
+
+  it("Escape in an open menu closes the menu, not the dialog", async () => {
+    const { onClose } = mount()
+    await flush()
+    click(trigger('Expires'))
+    const focused = document.activeElement!
+    expect(focused.className).toContain('menu-select__item')
+    act(() => void focused.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.querySelector('.menu-select__menu')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(trigger('Expires'))
+  })
+})
+
 describe('LiveLinkDialog — Control', () => {
-  it('Control shows the password field with Generate, and BOTH warnings: what watching exposes, then typing', async () => {
+  it('picking "can type" fills a generated password and shows the typing warning above the exposure', async () => {
     mount()
     await flush()
     expect(pwInput()).toBeNull()
-    expect(warnings()).toEqual([LIVE_LINK_WARNING])
-    pick('Control')
+    expect(warnings()).toEqual([])
+    expect(exposure()).toBe(LIVE_LINK_EXPOSURE)
+    pickRole('can type')
+    expect(roleValue()).toBe('can type')
     const input = pwInput()!
+    expect(input.value).toMatch(GENERATED)
     expect(input.type).toBe('text')
     expect(input.getAttribute('autocomplete')).toBe('off')
     expect(input.getAttribute('spellcheck')).toBe('false')
     expect(input.maxLength).toBe(128)
-    // Anyone with the link alone still WATCHES a Control link: that warning stays (minus the
-    // sentence a Control link makes false), and the typing warning comes under it.
-    expect(warnings()).toEqual([LIVE_LINK_EXPOSURE, controlWarningText('this computer')])
-    expect(document.querySelectorAll('.live-dialog__warning')[1].querySelector('strong')!.textContent).toBe('and')
-    expect(btn('Generate')).toBeTruthy()
-    // Back to Viewer: the watch warning alone again, no password field.
-    pick('Viewer')
+    // Anyone with the link alone still WATCHES a Control link: the exposure stays, the typing
+    // warning comes first.
+    expect(warnings()).toEqual([controlWarningText('this computer')])
+    expect(document.querySelector('.live-dialog__warning strong')!.textContent).toBe('and')
+    expect(exposure()).toBe(LIVE_LINK_EXPOSURE)
+    const order = [...document.querySelectorAll('.live-dialog__warning, .live-dialog__exposure')].map((e) => e.className)
+    expect(order).toEqual(['live-dialog__warning', 'live-dialog__exposure'])
+    // Ready to create at once: the generated password passes the rule.
+    setLabel('Ada')
+    expect(btn('Create live link').disabled).toBe(false)
+    // Back to watching: no password row, no typing warning.
+    pickRole('can watch')
     expect(pwInput()).toBeNull()
-    expect(warnings()).toEqual([LIVE_LINK_WARNING])
+    expect(warnings()).toEqual([])
+  })
+
+  it('a password already there is kept when "can type" is picked again', async () => {
+    mount()
+    await flush()
+    pickRole('can type')
+    typeInto(pwInput()!, 'longenough1')
+    pickRole('can chat')
+    pickRole('can type')
+    expect(pwInput()!.value).toBe('longenough1')
+  })
+
+  it('"New password" replaces it with 16 symbols from crypto.getRandomValues', async () => {
+    mount()
+    await flush()
+    pickRole('can type')
+    typeInto(pwInput()!, 'longenough1')
+    const spy = vi.spyOn(crypto, 'getRandomValues')
+    click(document.querySelector<HTMLButtonElement>('button[aria-label="New password"]')!)
+    expect(spy).toHaveBeenCalled()
+    expect(pwInput()!.value).toMatch(GENERATED)
+    spy.mockRestore()
   })
 
   it('the validation line is tied to the password field (aria-describedby)', async () => {
     mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     expect(pwInput()!.hasAttribute('aria-describedby')).toBe(false)
     typeInto(pwInput()!, 'short')
     const id = pwInput()!.getAttribute('aria-describedby')!
@@ -410,46 +493,15 @@ describe('LiveLinkDialog — Control', () => {
     expect(pwInput()!.hasAttribute('aria-describedby')).toBe(false)
   })
 
-  it('a disabled Control choice is described by its reason', async () => {
-    api.controlSupport.mockResolvedValue('unsupported')
-    mount()
-    await flush()
-    const id = radio('Control').getAttribute('aria-describedby')!
-    expect(document.getElementById(id)!.textContent).toBe(CONTROL_UNSUPPORTED_REASON)
-    expect(radio('Viewer').hasAttribute('aria-describedby')).toBe(false)
-  })
-
-  it("an SSH project's node: the typing warning names the host its shell runs on", async () => {
-    mount({ remoteNode: true, sshTarget: { user: 'ada', host: 'build.example' } })
-    await flush()
-    pick('Control')
-    expect(warnings()[1]).toBe(controlWarningText('ada@build.example'))
-    expect(warnings()[1]).toContain('running any command on ada@build.example;')
-    expect(warnings()[1]).not.toContain('this computer')
-  })
-
-  it('Generate fills 16 symbols from crypto.getRandomValues', async () => {
-    const spy = vi.spyOn(crypto, 'getRandomValues')
-    mount()
-    await flush()
-    setLabel('Ada')
-    pick('Control')
-    expect(btn('Create live link').disabled).toBe(true)
-    click(btn('Generate'))
-    expect(spy).toHaveBeenCalled()
-    expect(pwInput()!.value).toMatch(/^[0-9abcdefghjkmnpqrstvwxyz]{16}$/)
-    expect(btn('Create live link').disabled).toBe(false)
-    spy.mockRestore()
-  })
-
   it('Create stays disabled until the password is acceptable, and says why', async () => {
     mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     const create = (): HTMLButtonElement => btn('Create live link')
     const problem = (): string | null => document.querySelector('.live-dialog__invalid')?.textContent ?? null
-    // Empty: disabled, nothing nagging yet.
+    // Cleared: disabled, nothing nagging yet.
+    typeInto(pwInput()!, '')
     expect(create().disabled).toBe(true)
     expect(problem()).toBeNull()
     typeInto(pwInput()!, 'short')
@@ -463,15 +515,24 @@ describe('LiveLinkDialog — Control', () => {
     expect(problem()).toBeNull()
   })
 
+  it("an SSH project's node: the typing warning names the host its shell runs on", async () => {
+    mount({ remoteNode: true, sshTarget: { user: 'ada', host: 'build.example' } })
+    await flush()
+    pickRole('can type')
+    expect(warnings()).toEqual([controlWarningText('ada@build.example')])
+    expect(warnings()[0]).toContain('run any command on ada@build.example,')
+    expect(warnings()[0]).not.toContain('this computer')
+  })
+
   it('sends the password only for Control', async () => {
     api.create.mockImplementation(async (r) => createWith(r))
     mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
-    // A password typed, then the owner switched to Commenter: nothing of it leaves the dialog.
-    pick('Commenter')
+    // A password typed, then the owner switched to "can chat": nothing of it leaves the dialog.
+    pickRole('can chat')
     click(btn('Create live link'))
     await flush()
     expect(api.create).toHaveBeenCalledTimes(1)
@@ -481,10 +542,11 @@ describe('LiveLinkDialog — Control', () => {
     act(() => root.unmount())
     root = createRoot(host)
     api.create.mockClear()
+    localStorage.removeItem(LIVE_LINK_DEFAULTS_KEY)
     mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
     click(btn('Create live link'))
     await flush()
@@ -498,15 +560,21 @@ describe('LiveLinkDialog — Control', () => {
     })
   })
 
-  it("Control is disabled, with the reason, when the terminal can't take input — asked once, for this node", async () => {
+  it("\"can type\" is shown disabled, with the reason as its hint, when the terminal can't take input — asked once", async () => {
     api.controlSupport.mockResolvedValue('unsupported')
     mount()
     await flush()
     expect(api.controlSupport).toHaveBeenCalledTimes(1)
     expect(api.controlSupport).toHaveBeenCalledWith('n1')
-    expect(radio('Control').disabled).toBe(true)
-    expect(document.querySelector('.live-dialog__reason')!.textContent).toBe(CONTROL_UNSUPPORTED_REASON)
-    expect(radio('Viewer').disabled).toBe(false)
+    click(trigger('Anyone with the link'))
+    const off = option('can type')!
+    expect(off.getAttribute('aria-disabled')).toBe('true')
+    expect(off.querySelector('.menu-select__hint')!.textContent).toBe(CONTROL_UNSUPPORTED_REASON)
+    expect(option('can watch')!.hasAttribute('aria-disabled')).toBe(false)
+    // Clicking it changes nothing.
+    click(off)
+    expect(roleValue()).toBe('can watch')
+    expect(pwInput()).toBeNull()
   })
 
   it("'unknown' (and a rejected or missing answer) keeps Control offered: the create decides", async () => {
@@ -518,8 +586,9 @@ describe('LiveLinkDialog — Control', () => {
       else (api as { controlSupport?: unknown }).controlSupport = undefined
       mount()
       await flush()
-      expect(radio('Control').disabled, answer).toBe(false)
-      expect(document.querySelector('.live-dialog__reason'), answer).toBeNull()
+      click(trigger('Anyone with the link'))
+      expect(option('can type')!.hasAttribute('aria-disabled'), answer).toBe(false)
+      expect(option('can type')!.querySelector('.menu-select__hint')!.textContent, answer).not.toBe(CONTROL_UNSUPPORTED_REASON)
     }
   })
 
@@ -528,12 +597,13 @@ describe('LiveLinkDialog — Control', () => {
     api.controlSupport.mockImplementation(() => new Promise((r) => (answer = r)))
     mount()
     await flush()
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
     await act(async () => answer('unsupported'))
-    expect(radio('Control').checked).toBe(false)
-    expect(radio('Control').disabled).toBe(true)
+    expect(roleValue()).toBe('can watch')
     expect(pwInput()).toBeNull()
+    click(trigger('Anyone with the link'))
+    expect(option('can type')!.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('the done step shows the password once, with Copy password and the separate-send note', async () => {
@@ -541,9 +611,9 @@ describe('LiveLinkDialog — Control', () => {
     mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
-    pick('Unlimited')
+    choose('Expires', 'never')
     click(btn('Create live link'))
     await flush()
     const field = document.querySelector<HTMLInputElement>('.live-dialog__password input')!
@@ -561,14 +631,14 @@ describe('LiveLinkDialog — Control', () => {
   })
 
   // Final review, Minor 6: a stray click beside the done step must not throw away the only copy of a
-  // Control link's password. The scrim does nothing until Copy password was pressed; Escape and Done
-  // still close (deliberate gestures).
+  // Control link's password. The scrim does nothing until Copy password was pressed; Escape, Done and
+  // the head's close button still close (deliberate gestures).
   it('the done step of a Control link ignores the scrim until Copy password is pressed', async () => {
     api.create.mockImplementation(async (r) => createWith(r))
     const { onClose } = mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
     click(btn('Create live link'))
     await flush()
@@ -580,16 +650,29 @@ describe('LiveLinkDialog — Control', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('the done step of a Control link: Escape still closes before the password was copied', async () => {
+  it('the done step of a Control link: Escape and the close button still close before the password was copied', async () => {
     api.create.mockImplementation(async (r) => createWith(r))
     const { onClose } = mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
-    typeInto(pwInput()!, 'longenough1')
+    pickRole('can type')
     click(btn('Create live link'))
     await flush()
     escape()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('the head close button closes the form, and is disabled while a create is in flight', async () => {
+    let release!: (v: string | null) => void
+    const { onClose } = mount({ prepare: () => new Promise((r) => (release = r)) })
+    await flush()
+    setLabel('Ada')
+    click(btn('Create live link'))
+    const close = document.querySelector<HTMLButtonElement>('.live-dialog__close')!
+    expect(close.disabled).toBe(true)
+    await act(async () => release('refused'))
+    await flush()
+    click(document.querySelector<HTMLButtonElement>('.live-dialog__close')!)
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -608,7 +691,7 @@ describe('LiveLinkDialog — Control', () => {
     const { onClose } = mount()
     await flush()
     setLabel('Ada')
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
     click(btn('Create live link'))
     await flush()
@@ -626,7 +709,7 @@ describe('LiveLinkDialog — Control', () => {
   it('a form closed before creating drops the typed password too', async () => {
     const { onClose } = mount()
     await flush()
-    pick('Control')
+    pickRole('can type')
     typeInto(pwInput()!, 'longenough1')
     escape()
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -635,14 +718,12 @@ describe('LiveLinkDialog — Control', () => {
 })
 
 describe('LiveLinkDialog — Unlimited', () => {
-  it('sends ttlSeconds 0 and says the link works until it is stopped', async () => {
+  it('"never" sends ttlSeconds 0', async () => {
     mount()
     await flush()
     setLabel('Ada')
-    const notes = (): string[] => [...document.querySelectorAll('.live-dialog__note')].map((e) => e.textContent ?? '')
-    expect(notes()).not.toContain(UNLIMITED_NOTE)
-    pick('Unlimited')
-    expect(notes()).toContain(UNLIMITED_NOTE)
+    choose('Expires', 'never')
+    expect(trigger('Expires').textContent).toBe('never')
     click(btn('Create live link'))
     await flush()
     expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ ttlSeconds: 0 }))
@@ -653,7 +734,7 @@ describe('LiveLinkDialog — Unlimited', () => {
     mount()
     await flush()
     setLabel('Ada')
-    pick('Unlimited')
+    choose('Expires', 'never')
     click(btn('Create live link'))
     await flush()
     expect(document.querySelector('.live-dialog__error')!.textContent).toBe(
@@ -676,5 +757,60 @@ describe('LiveLinkDialog — Unlimited', () => {
     const html = body({ phase: 'done', role: 'viewer', url: 'https://nodeterm.dev/s/x#1.y', linkId: 'x', expiresAt: null })
     expect(html).toContain('Anyone with this link can watch until you stop it.')
     expect(html).not.toContain('live-dialog__password')
+  })
+})
+
+// ---- the remembered role and expiry (lib/liveLinkDefaults) ---------------------------------------
+
+describe('LiveLinkDialog — remembered choices', () => {
+  it('the first dialog opens on "can watch" for an hour', async () => {
+    mount()
+    await flush()
+    expect(roleValue()).toBe('can watch')
+    expect(trigger('Expires').textContent).toBe('in 1 hour')
+  })
+
+  it('a created link remembers its role and expiry; the next dialog opens on them, Control with a fresh password', async () => {
+    api.create.mockImplementation(async (r) => createWith(r))
+    mount()
+    await flush()
+    setLabel('Ada')
+    pickRole('can type')
+    const first = pwInput()!.value
+    choose('Expires', 'in 8 hours')
+    click(btn('Create live link'))
+    await flush()
+    expect(JSON.parse(localStorage.getItem(LIVE_LINK_DEFAULTS_KEY)!)).toEqual({ role: 'controller', ttl: 28800 })
+
+    act(() => root.unmount())
+    root = createRoot(host)
+    mount()
+    await flush()
+    expect(roleValue()).toBe('can type')
+    expect(trigger('Expires').textContent).toBe('in 8 hours')
+    // A fresh password, never the last one, and the typing warning is on screen from the start.
+    expect(pwInput()!.value).toMatch(GENERATED)
+    expect(pwInput()!.value).not.toBe(first)
+    expect(warnings()).toEqual([controlWarningText('this computer')])
+  })
+
+  it('a refused create remembers nothing', async () => {
+    api.create.mockResolvedValue({ ok: false, error: 'not-entitled' })
+    mount()
+    await flush()
+    setLabel('Ada')
+    pickRole('can chat')
+    click(btn('Create live link'))
+    await flush()
+    expect(localStorage.getItem(LIVE_LINK_DEFAULTS_KEY)).toBeNull()
+  })
+
+  it('a remembered Control on a terminal that cannot take input opens on "can watch"', async () => {
+    localStorage.setItem(LIVE_LINK_DEFAULTS_KEY, JSON.stringify({ role: 'controller', ttl: 3600 }))
+    api.controlSupport.mockResolvedValue('unsupported')
+    mount()
+    await flush()
+    expect(roleValue()).toBe('can watch')
+    expect(pwInput()).toBeNull()
   })
 })

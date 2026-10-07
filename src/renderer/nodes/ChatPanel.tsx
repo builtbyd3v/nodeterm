@@ -784,7 +784,7 @@ export function ChatPanel({
   // has them. Object identity is enough: `applyTail` carries an unconfirmed send as the same object.
   const queuedRef = useRef(new WeakSet<ChatMessage>())
 
-  const send = useCallback(async () => {
+  const sendOnce = useCallback(async () => {
     const text = input.trim()
     if (!text) return
     // Read the store at SEND time, not the render-time values: a PermissionRequest (or an Eco
@@ -857,6 +857,19 @@ export function ChatPanel({
       commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
     }
   }, [api, input, nodeId, agentId, onShowTerminal, pollScreen])
+  // A send in flight. A typed send (core/typed-input.ts, claude) takes a moment — core waits for the
+  // pane to show the text before it presses Enter — and the draft is only cleared once it lands, so
+  // a second Enter in that window would send the same prompt twice. Ignore it instead.
+  const sendingRef = useRef(false)
+  const send = useCallback(async () => {
+    if (sendingRef.current) return
+    sendingRef.current = true
+    try {
+      await sendOnce()
+    } finally {
+      sendingRef.current = false
+    }
+  }, [sendOnce])
 
   // The scheduled command read belongs to THIS transcript and this mount.
   useEffect(

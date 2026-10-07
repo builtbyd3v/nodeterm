@@ -18,6 +18,7 @@ import {
   type PasteDelivery
 } from '../tmux-naming'
 import { sanitizePasteText } from '../paste-injection'
+import { typedInputScript } from '../typed-input'
 import { canControlCanvas } from '../../shared/agents/config'
 import { COMBINED_PANE_MARKER, PANE_OWNER_FMT, PS_FOREGROUND_FLAGS } from '../agents/pane-owner'
 import { VISIBLE_CAPTURE_FORMAT, capturePaneTarget } from '../watch-link/capture-route'
@@ -359,6 +360,24 @@ export function remoteTmuxPasteArgs(
  * disappeared per host. The envelope now rides `remotePasteDelivery` above (`-p` + a separate
  * Enter, `PtyManager.sendEnvelope`), exactly like every other remote write.
  */
+
+/**
+ * The TYPED delivery on the REMOTE server (see core/typed-input.ts): the same fixed script, run
+ * under `sh -c` so it does not depend on the user's login shell, with the text on stdin — never on
+ * the remote command line, where it would sit in the host's process list.
+ */
+export function remoteTypedArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string,
+  buffer: string
+): string[] {
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(`sh -c ${posixQuote(typedInputScript('tmux', RMT_TMUX_SOCKET, sessionId, buffer))}`)
+  )
+}
 
 /**
  * A bare Enter into the remote pane — the remote half of `sendText`'s empty-payload case.
