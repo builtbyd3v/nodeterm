@@ -22,7 +22,7 @@ import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
 import { agentEnvSnapshot } from '../lib/agentEnv'
 import { uuid } from '@renderer/lib/uuid'
-import { expandRectToGrid, snapNodeToGrid, type Rect } from '../lib/nodeSizing'
+import { expandRectToGrid, NODE_MIN_SIZES, snapNodeToGrid, type Rect } from '../lib/nodeSizing'
 import { claudeCliCapsNow, grokCliCapsNow } from './permissionMode'
 import { ensureGrokTakenIds, grokTakenIdsNow } from './grokSessionIds'
 import { mintFreeGrokSessionId } from '@shared/agents/grok-session-mint'
@@ -74,6 +74,45 @@ const FILES_SIZE = { width: 340, height: 460 }
 
 /** Height of a node when collapsed (header only). */
 export const COLLAPSED_HEIGHT = 40
+
+/** The node kinds that render a header-only collapsed state. Any other kind squashed to
+ *  COLLAPSED_HEIGHT crushes its content (a group frame strands its children outside it), so
+ *  neither the menu nor the toggle offers collapse to them. */
+export const COLLAPSIBLE_KINDS: ReadonlySet<string> = new Set(['terminal', 'sticky', 'files'])
+export const isCollapsible = (n: Pick<CanvasNode, 'type'>): boolean =>
+  COLLAPSIBLE_KINDS.has(n.type ?? 'terminal')
+/** Whether the collapse toggle may act on `n`: a collapsible kind either way, or ANY node that is
+ *  already collapsed — an older build collapsed every kind, and such a node must still expand. */
+export const canToggleCollapse = (n: Pick<CanvasNode, 'type' | 'data'>): boolean =>
+  isCollapsible(n) || !!n.data.collapsed
+
+/**
+ * Flip `collapsed` on every node in `ids` the toggle may act on (`canToggleCollapse`): a
+ * non-collapsible kind is only ever EXPANDED. Collapsing records the LIVE height (a user
+ * resize never writes `expandedHeight`, so the stored value can be the load-time size); expanding
+ * gives back what was recorded.
+ */
+export function toggleCollapsed(nodes: CanvasNode[], ids: Iterable<string>): CanvasNode[] {
+  const set = new Set(ids)
+  return nodes.map((n) => {
+    if (!set.has(n.id) || !canToggleCollapse(n)) return n
+    const next = !n.data.collapsed
+    const live = n.measured?.height ?? (n.height as number | undefined)
+    const stored = n.data.expandedHeight as number | undefined
+    const expandedHeight =
+      (next ? live ?? stored : stored ?? live) ?? COLLAPSED_FALLBACK_HEIGHT[n.type ?? 'terminal'] ?? 300
+    const height = next ? COLLAPSED_HEIGHT : expandedHeight
+    return {
+      ...n,
+      height,
+      style: { ...n.style, height },
+      data: { ...n.data, collapsed: next, expandedHeight }
+    }
+  })
+}
+/** Height when a node has neither a measurement nor a recorded size — the per-kind values the four
+ *  toggles this replaced each used. */
+const COLLAPSED_FALLBACK_HEIGHT: Partial<Record<string, number>> = { terminal: 300, sticky: 200, files: 460 }
 
 /** User data carried in the React Flow node's data field. */
 export interface NodeData {
@@ -1381,10 +1420,14 @@ export function arrangeNodes(
   ids: string[],
   opts?: { layout?: ArrangeLayout; cols?: number; gap?: number; origin?: { x: number; y: number } }
 ): CanvasNode[] {
-  const byId = new Map(nodes.map((nd) => [nd.id, nd]))
-  const members = [...new Set(ids)].flatMap((id) => byId.get(id) ?? [])
+  let byId = new Map(nodes.map((nd) => [nd.id, nd]))
+  let members = [...new Set(ids)].flatMap((id) => byId.get(id) ?? [])
   // Only meaningful within one coordinate space (see commonParentId) — mixed containers → no-op.
   if (members.length === 0 || new Set(members.map((m) => m.parentId ?? null)).size > 1) return nodes
+  const memberIds = new Set(members.map((m) => m.id))
+  nodes = restoreMaximizedWhere(nodes, (nd) => memberIds.has(nd.id))
+  byId = new Map(nodes.map((nd) => [nd.id, nd]))
+  members = [...memberIds].flatMap((id) => byId.get(id) ?? [])
   const layout = opts?.layout ?? 'grid'
   const gap = opts?.gap ?? 40
   const origin = opts?.origin ?? {
@@ -1593,12 +1636,13 @@ export function arrangeByLineage(
   opts?: { gap?: number; origin?: { x: number; y: number }; containerId?: string | null }
 ): CanvasNode[] {
   const containerId = opts?.containerId ?? null
-  const topLevel = nodes.filter((nd) => (nd.parentId ?? null) === containerId)
-  if (topLevel.length < 2) return nodes
+  if (nodes.filter((nd) => (nd.parentId ?? null) === containerId).length < 2) return nodes
   const { layers, loose } = lineageLayers(nodes, edges, containerId)
   // No rope reached two different members: every node would land in the single `loose` band,
   // which is a worse `Tidy canvas`, not a lineage view.
   if (layers.length === 0) return nodes
+  nodes = restoreMaximizedWhere(nodes, (nd) => (nd.parentId ?? null) === containerId)
+  const topLevel = nodes.filter((nd) => (nd.parentId ?? null) === containerId)
 
   const gap = opts?.gap ?? 40
   const origin = opts?.origin ?? {
@@ -1688,8 +1732,10 @@ export function tidyCanvas(
   edges: readonly LineageEdge[] = [],
   opts?: { gap?: number }
 ): CanvasNode[] {
+  if (nodes.filter((nd) => !nd.parentId).length < 2) return nodes
+  // Every unit moves, and a frame is packed at the size its (maximized) child inflated it to.
+  nodes = restoreMaximizedWhere(nodes, () => true)
   const units = nodes.filter((nd) => !nd.parentId).sort(byReadingPosition)
-  if (units.length < 2) return nodes
   const gap = opts?.gap ?? 40
   const order = new Map(units.map((u, i) => [u.id, i]))
   const unitOf = containerAncestors(nodes, null)
@@ -2070,6 +2116,12 @@ export function placeNodeInRect(
   return withNodeRect(nodes, node, rect, {})
 }
 
+/** `rect`'s size raised to the node kind's NodeResizer minimum. */
+function clampToMinSize(node: CanvasNode, rect: { width: number; height: number }) {
+  const min = NODE_MIN_SIZES[node.type ?? 'terminal'] ?? { width: 0, height: 0 }
+  return { width: Math.max(rect.width, min.width), height: Math.max(rect.height, min.height) }
+}
+
 /**
  * The shared placement core: put `node` at the ROOT-space `rect` (converted to parent-relative),
  * patch its data, and re-fit the ancestor frames in the same transform — `extent:'parent'` would
@@ -2087,18 +2139,22 @@ function withNodeRect(
   const root = rootPosition(node, nodes)
   const originX = root.x - node.position.x
   const originY = root.y - node.position.y
+  // A programmatic resize bypasses the NodeResizer's minimums (lib/nodeSizing.ts), and a zone
+  // of a zoomed-in viewport is routinely smaller than a kind's floor — clamp here, once, for
+  // maximize, zones, refit and restore alike.
+  const { width, height } = clampToMinSize(node, rect)
   const next = nodes.map((n) =>
     n.id === node.id
       ? {
           ...n,
           position: { x: rect.x - originX, y: rect.y - originY },
-          width: rect.width,
-          height: rect.height,
-          style: { ...n.style, width: rect.width, height: rect.height },
+          width,
+          height,
+          style: { ...n.style, width, height },
           // Drop the stale measurement in the same tick: flowToNodeStates prefers `measured` over
           // `width`/`height`, and a commit racing the re-measure would persist the OLD size.
           measured: undefined,
-          data: { ...n.data, expandedHeight: rect.height, ...dataPatch }
+          data: { ...n.data, expandedHeight: height, ...dataPatch }
         }
       : n
   )
@@ -2133,15 +2189,63 @@ export function refitMaximizedNode(
   // the node already has. Returning the same array keeps the workspace out of the dirty/save path
   // and lets the caller decide by identity whether anything actually moved.
   const root = rootPosition(node, nodes)
+  const size = clampToMinSize(node, rect)
   if (
     samePx(root.x, rect.x) &&
     samePx(root.y, rect.y) &&
-    samePx(nodeW(node) || (node.style?.width as number) || 0, rect.width) &&
-    samePx(nodeH(node) || (node.style?.height as number) || 0, rect.height)
+    samePx(nodeW(node) || (node.style?.width as number) || 0, size.width) &&
+    samePx(nodeH(node) || (node.style?.height as number) || 0, size.height)
   ) {
     return nodes
   }
   return withNodeRect(nodes, node, rect, { premaxRect })
+}
+
+/**
+ * Take every maximized node `pick` selects back to its remembered rect. A layout pass packs nodes
+ * by size: left maximized, a node is packed at full-viewport size, keeps a restore rect that later
+ * teleports it onto the new layout, and the panel-pin refit snaps it back to fullscreen.
+ */
+function restoreMaximizedWhere(nodes: CanvasNode[], pick: (n: CanvasNode) => boolean): CanvasNode[] {
+  return nodes.reduce(
+    (acc, n) => (n.data.premaxRect && pick(n) ? restoreMaximizedNode(acc, n.id) : acc),
+    nodes
+  )
+}
+
+/**
+ * The ids whose user gesture ENDED in `changes` having actually moved or resized the node: a drag
+ * end (`dragging: false`, which React Flow emits only when positions changed) or a resize end that
+ * followed at least one live `resizing: true` change for that id. React Flow's resizer emits
+ * `resizing: false` on every mouseup — a plain click on a grab band included — so the end alone is
+ * not evidence of a resize. `resizing` is the caller's gesture memory (ids mid-resize), carried
+ * across change batches and updated here. A re-measure carries neither flag.
+ */
+export function movedGestureEnds(
+  changes: readonly { type: string; id?: string; dragging?: boolean; resizing?: boolean }[],
+  resizing: Set<string>
+): Set<string> {
+  const ids = new Set<string>()
+  for (const c of changes) {
+    if (!c.id) continue
+    if (c.type === 'position' && c.dragging === false) ids.add(c.id)
+    else if (c.type === 'dimensions' && c.resizing === true) resizing.add(c.id)
+    else if (c.type === 'dimensions' && c.resizing === false && resizing.delete(c.id)) ids.add(c.id)
+  }
+  return ids
+}
+
+/**
+ * A user drag or resize ends maximize MODE for those nodes where they now stand: the node is no
+ * longer the viewport-sized window "Restore" assumes, so keeping `premaxRect` would leave a stale
+ * Restore in the header and let the panel-pin refit snap the user's placement back to fullscreen.
+ * `ids` comes from movedGestureEnds; programmatic placements never reach onNodesChange.
+ */
+export function endMaximizeOnUserGeometry(nodes: CanvasNode[], ids: ReadonlySet<string>): CanvasNode[] {
+  if (!nodes.some((n) => ids.has(n.id) && n.data.premaxRect)) return nodes
+  return nodes.map((n) =>
+    ids.has(n.id) && n.data.premaxRect ? { ...n, data: { ...n.data, premaxRect: undefined } } : n
+  )
 }
 
 /**

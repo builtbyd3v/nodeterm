@@ -19,6 +19,7 @@ import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
 import { fanoutStillWorking } from '@renderer/lib/completionAlert'
+import { publishCanvasZoom } from '@renderer/lib/canvasZoomVar'
 import {
   addEdge,
   applyEdgeChanges,
@@ -32,6 +33,7 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useStoreApi,
   type Connection,
   type EdgeChange,
   type Viewport
@@ -833,7 +835,10 @@ import {
   applyMutationToFlow,
   agentLaunchOverride,
   claudeLaunchCommand,
-  COLLAPSED_HEIGHT,
+  toggleCollapsed,
+  canToggleCollapse,
+  endMaximizeOnUserGeometry,
+  movedGestureEnds,
   alignNodes,
   arrangeByLineage,
   arrangeGroupChildren,
@@ -1964,6 +1969,10 @@ export function Canvas() {
     getNodes,
     getNodesBounds
   } = useReactFlow()
+
+  // `--nt-zoom` on React Flow's root: the resize grab zones size themselves in screen px with it.
+  const rfStore = useStoreApi()
+  useEffect(() => publishCanvasZoom(rfStore), [rfStore])
 
   // Single "fit everything" path for every fit-view entry point (dock button, the built-in
   // Controls button, the ⌘K palette and the context menu) so they behave identically and there's
@@ -4651,6 +4660,8 @@ export function Canvas() {
     setNodes((ns) => (ns.some((n) => n.selected) ? ns.map((n) => ({ ...n, selected: false })) : ns))
   }, [ephSelId, setNodes])
 
+  // Ids mid-resize (a `resizing: true` change seen, its end not yet): see movedGestureEnds.
+  const resizingIdsRef = useRef(new Set<string>())
   const handleNodesChange: typeof onNodesChange = useCallback(
     (changes) => {
       // Ephemeral nodes (subagent / loop) live outside the managed state. Persist their drag
@@ -4710,9 +4721,12 @@ export function Canvas() {
         ? snapResizeChanges(managed, nodesRef.current, snapSettings.gridSize || GRID)
         : managed
       onNodesChange(snapped)
+      // A user drag/resize of a maximized node ends maximize mode where it now stands.
+      const ended = movedGestureEnds(managed, resizingIdsRef.current)
+      if (ended.size) setNodes((ns) => endMaximizeOnUserGeometry(ns, ended))
       if (snapped.some((c) => c.type !== 'select')) markDirty()
     },
-    [onNodesChange, markDirty, ephParentPosition]
+    [onNodesChange, setNodes, markDirty, ephParentPosition]
   )
 
   // Resolve a node's agent id, with a tags fallback for not-yet-migrated legacy nodes and a
@@ -9311,22 +9325,7 @@ export function Canvas() {
 
   const toggleCollapseNodes = useCallback(
     (ids: string[]) => {
-      const set = new Set(ids)
-      setNodes((ns) =>
-        ns.map((n) => {
-          if (!set.has(n.id)) return n
-          const next = !n.data.collapsed
-          const expandedHeight =
-            (n.data.expandedHeight as number) ?? n.measured?.height ?? (n.height as number) ?? 300
-          const height = next ? COLLAPSED_HEIGHT : expandedHeight
-          return {
-            ...n,
-            height,
-            style: { ...n.style, height },
-            data: { ...n.data, collapsed: next, expandedHeight }
-          }
-        })
-      )
+      setNodes((ns) => toggleCollapsed(ns, ids))
       markDirty()
     },
     [setNodes, markDirty]
@@ -10533,7 +10532,11 @@ export function Canvas() {
             }
           ] as MenuItem[])
         : []),
-      ...(isHidden('collapse', hidden)
+      ...(isHidden('collapse', hidden) ||
+      !ids.some((nid) => {
+        const n = nodesRef.current.find((nd) => nd.id === nid)
+        return !!n && canToggleCollapse(n)
+      })
         ? []
         : ([
             {

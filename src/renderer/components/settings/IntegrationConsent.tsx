@@ -140,8 +140,49 @@ export function HostIntegrationBanner({ hostKey }: { hostKey: string | null }): 
   )
 }
 
+/** The state, said as what is on disk — "On"/"Off" read like the Add-menu switch below it. */
 function choiceText(c: IntegrationChoice | undefined): string {
-  return c === 'enabled' ? 'On' : c === 'declined' ? 'Off' : 'Not asked'
+  return c === 'enabled' ? 'Installed' : c === 'declined' ? 'Not installed' : 'Not set up yet'
+}
+
+/** One agent or SSH host: its state, and only the action(s) that would change it. */
+function IntegrationRow({
+  icon,
+  label,
+  choice,
+  onChoose,
+  testId
+}: {
+  icon?: React.ReactNode
+  label: string
+  choice: IntegrationChoice | undefined
+  onChoose: (c: IntegrationChoice) => void
+  testId: string
+}): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-3 py-1" data-testid={testId}>
+      {icon}
+      <span className="flex-1 text-[13px] text-text">{label}</span>
+      <span className="text-[12px] text-muted" data-testid={`${testId}-state`}>
+        {choiceText(choice)}
+      </span>
+      {choice !== 'enabled' && (
+        <Button variant="primary" onClick={() => onChoose('enabled')} aria-label={`Install the ${label} integration`}>
+          Install
+        </Button>
+      )}
+      {choice === 'enabled' && (
+        <Button onClick={() => onChoose('declined')} aria-label={`Remove the ${label} integration and what nodeterm added`}>
+          Remove
+        </Button>
+      )}
+      {choice === undefined && (
+        <Button onClick={() => onChoose('declined')} aria-label={`Don't install the ${label} integration`}>
+          Don’t install
+        </Button>
+      )}
+    </div>
+  )
 }
 
 /** Settings → Agents: one row per agent, the per-host answers, and what the host kept. */
@@ -169,59 +210,33 @@ export function IntegrationSettings(): React.JSX.Element {
   const hosts = Object.entries(integrationsOf(settings).hosts ?? {})
   return (
     <div className="space-y-2" data-testid="integration-settings">
-      <p className="text-[12px] text-muted">
-        {INTEGRATION_WRITES} {INTEGRATION_UNAVAILABLE}
-      </p>
       {status?.vetoed && (
         <p className="text-[12px] text-muted">
           This server was started with agent installs disabled, so nothing is written regardless of
           these choices.
         </p>
       )}
-      {INTEGRATION_AGENT_IDS.map((id) => {
-        const c = agentChoice(settings, id)
-        return (
-          <div key={id} className="flex items-center gap-3 py-1" data-testid={`integration-row-${id}`}>
-            <AgentIcon agentId={id} size={18} />
-            <span className="flex-1 text-[13px] text-text">{labelOf(id)}</span>
-            <span className="text-[12px] text-muted">{choiceText(c)}</span>
-            <Button
-              variant={c === 'enabled' ? 'primary' : 'default'}
-              onClick={() => save(withAgentChoice(settings, id, 'enabled'))}
-              aria-label={`Enable the ${labelOf(id)} integration`}
-            >
-              Enable
-            </Button>
-            <Button
-              variant={c === 'declined' ? 'primary' : 'default'}
-              onClick={() => save(withAgentChoice(settings, id, 'declined'))}
-              aria-label={`Turn off the ${labelOf(id)} integration and remove what nodeterm added`}
-            >
-              Decline &amp; clean up
-            </Button>
-          </div>
-        )
-      })}
+      {INTEGRATION_AGENT_IDS.map((id) => (
+        <IntegrationRow
+          key={id}
+          icon={<AgentIcon agentId={id} size={18} />}
+          label={labelOf(id)}
+          choice={agentChoice(settings, id)}
+          onChoose={(c) => save(withAgentChoice(settings, id, c))}
+          testId={`integration-row-${id}`}
+        />
+      ))}
       {hosts.length > 0 && (
         <div className="pt-2">
-          <div className="text-[12px] text-muted pb-1">SSH hosts</div>
+          <div className="text-[12px] text-muted pb-1">On SSH hosts</div>
           {hosts.map(([host, c]) => (
-            <div key={host} className="flex items-center gap-3 py-1" data-testid={`integration-host-${host}`}>
-              <span className="flex-1 text-[13px] text-text">{host}</span>
-              <span className="text-[12px] text-muted">{choiceText(c)}</span>
-              <Button
-                variant={c === 'enabled' ? 'primary' : 'default'}
-                onClick={() => save(withHostChoice(settings, host, 'enabled'))}
-              >
-                Allow
-              </Button>
-              <Button
-                variant={c === 'declined' ? 'primary' : 'default'}
-                onClick={() => save(withHostChoice(settings, host, 'declined'))}
-              >
-                Decline &amp; clean up
-              </Button>
-            </div>
+            <IntegrationRow
+              key={host}
+              label={host}
+              choice={c}
+              onChoose={(next) => save(withHostChoice(settings, host, next))}
+              testId={`integration-host-${host}`}
+            />
           ))}
         </div>
       )}

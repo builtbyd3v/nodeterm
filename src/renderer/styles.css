@@ -7478,6 +7478,92 @@ body,
   pointer-events: auto;
 }
 
+/* ---- Resize grab zones -------------------------------------------------------------------------
+   React Flow's resize lines are 1px and its corner handles 5px, so the resize cursor appeared only
+   on a hairline. Each control gets an invisible ::before hit region (the cursor and the press both
+   belong to the control); the visible line and handle are unchanged. HIG pointing-devices.md ›
+   "Add padding around interactive elements to create comfortable hit regions" — 12pt for an element
+   with a visible edge — and accessibility.md: desktop targets 20x20pt minimum, which the corners get.
+   - Edges: 12 screen px, biased OUTWARD (8 outside the border, 4 inside — and never more than 6
+     flow px inside), so the band takes as little as possible from header buttons and text.
+   - Corners: 20x20 screen px (14 outside, 6 inside, inner capped at 6 flow px), drawn after the lines so a corner wins where
+     they overlap, and covering the whole band intersection, so sliding along the border never
+     drops to the default cursor (HIG: contiguous hit regions).
+   - Sized in SCREEN px through `--nt-zoom` (lib/canvasZoomVar.ts); below zoom 0.3 the zone shrinks
+     with the node instead of swallowing a tiny one.
+   Exists only while the resizer renders, i.e. while the node is selected. */
+:root {
+  --nt-zoom: 1;
+}
+.react-flow__resize-control {
+  --rz-k: max(var(--nt-zoom), 0.3);
+  --rz-out: calc(8px / var(--rz-k));
+  /* The INNER part is also capped in flow px (6): zoomed out, 4 screen px is a big slice of a
+     small node's header — its drag area and its close/maximize buttons. */
+  --rz-in: min(calc(4px / var(--rz-k)), 6px);
+  /* Corner handles are already counter-scaled by React Flow (`scale: max(1/zoom, 1)`), so below
+     zoom 1 their flow px ARE screen px; only above it does the size need dividing. */
+  --rc-k: max(var(--nt-zoom), 1);
+  --rc-out: calc(14px / var(--rc-k));
+  /* Inner part: 6 screen px, at most 6 flow px (below zoom 1 the handle's own scale is 1/zoom). */
+  --rc-in: calc(6px * min(var(--nt-zoom), 1) / var(--rc-k));
+}
+/* The node's resize controls are a SIBLING of its root (so a glass root's backdrop-filter cannot
+   clip them), which puts the later-painted root over their inner half. Lift them above the root
+   and the terminal's hover guard (z 2); the kanban half-pill stays above them. */
+.react-flow__node > .react-flow__resize-control {
+  z-index: 3;
+}
+.react-flow__resize-control::before {
+  content: '';
+  position: absolute;
+}
+.react-flow__resize-control.line.left::before {
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--rz-out));
+  right: calc(-1 * var(--rz-in));
+}
+.react-flow__resize-control.line.right::before {
+  top: 0;
+  bottom: 0;
+  right: calc(-1 * var(--rz-out));
+  left: calc(-1 * var(--rz-in));
+}
+.react-flow__resize-control.line.top::before {
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--rz-out));
+  bottom: calc(-1 * var(--rz-in));
+}
+.react-flow__resize-control.line.bottom::before {
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--rz-out));
+  top: calc(-1 * var(--rz-in));
+}
+/* A handle's padding box is 5px, centred on the corner: offsets are from that centre. */
+.react-flow__resize-control.handle::before {
+  width: calc(var(--rc-out) + var(--rc-in));
+  height: calc(var(--rc-out) + var(--rc-in));
+}
+.react-flow__resize-control.handle.left::before {
+  left: calc(2.5px - var(--rc-out));
+}
+.react-flow__resize-control.handle.right::before {
+  left: calc(2.5px - var(--rc-in));
+}
+.react-flow__resize-control.handle.top::before {
+  top: calc(2.5px - var(--rc-out));
+}
+.react-flow__resize-control.handle.bottom::before {
+  top: calc(2.5px - var(--rc-in));
+}
+/* The paint-only copies (`.nt-resize-ghost`) carry no grab zone. */
+.react-flow__resize-control.nt-resize-ghost::before {
+  content: none;
+}
+
 /* Bound to a git worktree: a checkout, not a loose grouping. Solid, thicker border (the tint is
    bumped inline from the group's own data.color — no separate palette) so it reads as bound from
    across the canvas, where the label pill is too small to parse. */
@@ -12927,6 +13013,8 @@ button.pull-checks__name {
   text-overflow: ellipsis;
   cursor: pointer;
   backdrop-filter: blur(4px);
+  /* Over the node's resize controls (z 3). */
+  z-index: 4;
 }
 .kanban-node-pill:hover {
   filter: brightness(1.3);
@@ -17199,6 +17287,39 @@ body.focus-mode .dock:hover {
 }
 :root[data-nt-glass='on'] .react-flow__node:not(.react-flow__node-group) .react-flow__resize-control.line {
   border-color: var(--glass-edge) !important;
+}
+/* The live resize controls moved OUTSIDE the node root (direct children of the node wrapper) only
+   take the pointer; they paint nothing in any look. A control outside the root cannot reproduce
+   where the old one painted (under glass: against the root's padding box, cut by its rounded
+   clip; in every look: partly under the node's own body), so each node also renders a second,
+   paint-only <NodeResizer> in the old place inside the root, its controls classed
+   `.nt-resize-ghost` and taking no pointer — so no second resizer can ever start a drag.
+   Specific enough, and !important, to beat React Flow's inline colour and the glass overrides. */
+:root .flow-wrap .react-flow .react-flow__node:not(.react-flow__node-group) > .react-flow__resize-control:is(.handle, .line) {
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+.react-flow__resize-control.nt-resize-ghost {
+  pointer-events: none;
+}
+/* Link dots moved OUTSIDE a terminal's root (so a glass root's backdrop-filter, its own stacking
+   context, no longer buries them under the resize controls) keep the look they had while that
+   root clipped them: laid out against its PADDING box, so centred 1px inside the border, and
+   showing only their inner half. Scoped to exactly when the root's backdrop-filter is live — it
+   is dropped while the camera moves with "Keep blur while moving" off (.canvas-moving) and under
+   Reduce Transparency, and there nothing was clipped. A clip-path also clips hit testing, so the
+   outer half goes to the resize band exactly as before; the tooltip (above, growing inward) stays
+   inside the clip, so on a node narrower than it the tooltip is no longer cut at the node's far
+   edge as it was (not reproduced: the clip box cannot reach the node's width). */
+@media (prefers-reduced-transparency: no-preference) {
+  :root[data-nt-glass='on'] .flow-wrap:not(.canvas-moving) .react-flow__node > .bridge-handle--in {
+    left: 1px;
+    clip-path: inset(-48px -480px -48px 50%);
+  }
+  :root[data-nt-glass='on'] .flow-wrap:not(.canvas-moving) .react-flow__node > .bridge-handle--out {
+    right: 1px;
+    clip-path: inset(-48px 50% -48px -480px);
+  }
 }
 /* State stays visible without the accent colour: selection is a neutral ink outline; unread and
    attention keep their own glows (app state, not a per-node colour), and their border reads

@@ -94,15 +94,24 @@ describe('the per-host question', () => {
 })
 
 describe('Settings → Agents', () => {
-  it('has Enable / Decline & clean up per agent, and lists what the host kept', async () => {
+  it('shows each agent\'s state with only the action that changes it, and lists what the host kept', async () => {
     vi.useFakeTimers()
     try {
       useSettings.setState({ settings: { ...DEFAULT_SETTINGS, agentIntegrations: answerIntegrationPrompt(['claude']) } })
       render(<IntegrationSettings />)
       for (const a of INTEGRATION_AGENT_IDS) expect(host.querySelector(`[data-testid="integration-row-${a}"]`)).toBeTruthy()
-      const decline = host.querySelector('button[aria-label^="Turn off the Claude"]') as HTMLButtonElement
-      click(decline)
+      const state = (a: string): string | null | undefined =>
+        host.querySelector(`[data-testid="integration-row-${a}-state"]`)?.textContent
+      expect(state('claude')).toBe('Installed')
+      expect(state('codex')).toBe('Not installed')
+      // An installed agent offers only Remove; a declined one only Install.
+      expect(host.querySelector('button[aria-label^="Install the Claude"]')).toBeNull()
+      expect(host.querySelector('button[aria-label^="Remove the Codex"]')).toBeNull()
+      const remove = host.querySelector('button[aria-label^="Remove the Claude"]') as HTMLButtonElement
+      click(remove)
       expect(consent()?.agents?.claude).toBe('declined')
+      click(host.querySelector('button[aria-label^="Install the Codex"]') as HTMLButtonElement)
+      expect(consent()?.agents?.codex).toBe('enabled')
       await act(async () => {
         vi.advanceTimersByTime(500)
         await Promise.resolve()
