@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
-import { submitsSeparately } from '../shared/agents/config'
+import { submitsSeparately, typesChatInput } from '../shared/agents/config'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 
@@ -48,6 +48,11 @@ interface Internals {
   liveSessionForPersistKey(k: string): unknown
   deliverText(k: string, text: string, enter: boolean): Promise<true | false | 'pasted-not-submitted'>
   sendText(k: string, text: string, opts?: { enter?: boolean }): Promise<unknown>
+  sendTyped(k: string, text: string, agentId: string): Promise<unknown>
+  sendChatPrompt(k: string, text: string, agentId: string): Promise<unknown>
+  captureSession(k: string): Promise<string>
+  sendEnvelope(k: string, envelope: string): Promise<boolean>
+  sendEnvelopeNow(k: string, envelope: string): Promise<boolean>
 }
 
 describe('PtyManager.sendText: overlapping separate-submit sends do not interleave (review 2026-10-03)', () => {
@@ -98,12 +103,78 @@ describe('PtyManager.sendText: overlapping separate-submit sends do not interlea
     ])
   })
 
-  it('claude keeps its one-shot paste+Enter, unchained', async () => {
+  it('claude keeps its one-shot paste+Enter', async () => {
     const { mgr, calls } = await rig('claude')
     expect(await Promise.all([mgr.sendText('n1', 'first'), mgr.sendText('n1', 'second')])).toEqual([true, true])
     expect(calls).toEqual([
       ['first', true],
       ['second', true]
+    ])
+  })
+})
+
+// b27b3800 sends chat-view prompts as TYPED text, but only for TYPED_INPUT_CAPABLE (claude). Cursor
+// keeps the paste, so its chat send must still reach the split: paste, gap, bare Enter. Every write
+// into a pane now queues on `serializePaneWrite`, so an envelope cannot land between the two halves.
+describe('PtyManager.sendChatPrompt: the typed chat path leaves cursor on the split paste', () => {
+  beforeEach(() => {
+    initPlatform(fakePlatform())
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    resetPlatformForTests()
+  })
+
+  async function rig(agent: string) {
+    const { PtyManager } = await import('./pty-manager')
+    const mgr = new PtyManager() as unknown as Internals
+    mgr.agentByKey.set('n1', agent)
+    mgr.liveSessionForPersistKey = () => ({})
+    mgr.captureSession = async () => ''
+    const calls: unknown[][] = []
+    mgr.deliverText = async (_k, text, enter) => {
+      calls.push([text, enter])
+      return true
+    }
+    mgr.sendTyped = async (_k, text, agentId) => {
+      calls.push(['typed', text, agentId])
+      return true
+    }
+    mgr.sendEnvelopeNow = async (_k, envelope) => {
+      calls.push(['envelope', envelope])
+      return true
+    }
+    return { mgr, calls }
+  }
+
+  it('cursor is not typed: its chat prompt is pasted, then submitted by a separate Enter', async () => {
+    expect(typesChatInput('cursor')).toBe(false)
+    const { mgr, calls } = await rig('cursor')
+    const sent = mgr.sendChatPrompt('n1', 'line one\nline two', 'cursor')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await sent).toBe(true)
+    expect(calls).toEqual([
+      ['line one\nline two', false],
+      ['', true]
+    ])
+  })
+
+  it('claude takes the typed path and never the split', async () => {
+    const { mgr, calls } = await rig('claude')
+    expect(await mgr.sendChatPrompt('n1', 'hi', 'claude')).toBe(true)
+    expect(calls).toEqual([['typed', 'hi', 'claude']])
+  })
+
+  it('an envelope arriving mid-split waits until the cursor Enter is sent', async () => {
+    const { mgr, calls } = await rig('cursor')
+    const both = Promise.all([mgr.sendChatPrompt('n1', 'prompt', 'cursor'), mgr.sendEnvelope('n1', 'env')])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await both).toEqual([true, true])
+    expect(calls).toEqual([
+      ['prompt', false],
+      ['', true],
+      ['envelope', 'env']
     ])
   })
 })
