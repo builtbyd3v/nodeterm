@@ -181,9 +181,10 @@ const accountConfigDir = (home: string, accountId: string) => `${home}/.nodeterm
  * codex 0.156.1 `debug prompt-input`, gemini 0.62.0 `skills list`, opencode 1.18.33 `debug skill`,
  * grok 1.0.44 `inspect --json`; copilot 1.0.89 documents it in `copilot skill --help`). One
  * env-independent dir is what a host we cannot introspect cheaply needs: `$COPILOT_HOME`,
- * `$GROK_HOME` and `$XDG_CONFIG_HOME` on the host say nothing about it.
+ * `$GROK_HOME` and `$XDG_CONFIG_HOME` on the host say nothing about it. cursor-agent loads
+ * `~/.agents/skills` too (its bundle's skill roots, docs/cursor-agent.md; not run on a host).
  */
-const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok']
+const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok', 'cursor']
 const claudeSkillsRoot = (home: string) => `${home}/.claude`
 const agentsSkillsRoot = (home: string) => `${home}/.agents`
 
@@ -541,6 +542,10 @@ export class RemoteHooks {
       }
       if (plan.remove.has('codex')) {
         await stripRemoteSettingsFile(`${home}/.codex/hooks.json`, run, (cfg) => (stripCodexManagedHooks(cfg as CodexHooksConfig) ?? cfg) as Record<string, unknown>)
+      }
+      if (plan.remove.has('cursor')) {
+        // Our entries only (exact managed command); the IDE's and other tools' hooks stay.
+        await stripRemoteSettingsFile(`${home}/.cursor/hooks.json`, run, (cfg) => (cfg.hooks === undefined ? cfg : applyCursorHooks(cfg, null)))
       }
       // Files we own outright: grok's and copilot's hook configs, and our hook scripts.
       const owned: string[] = []

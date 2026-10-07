@@ -112,9 +112,14 @@ nothing. Only where `cursor-agent` is found (PATH, then `~/.local/bin`); one boo
 login-shell re-probe like agy). Removal deletes only our entries and never creates the file. Ours =
 command containing `.nodeterm/agent-hooks/cursor.sh`. Tests use a temp dir, never the real home.
 
+Consent (issue #744, `core/agent-integrations.ts`): the installer runs only for a `cursor` choice of
+`enabled`, like every other agent. `declined` runs `removeCursorHooks`, deletes `cursor.sh` and our
+two skills from `~/.cursor/skills` (exact-content receipts; a file the user edited is kept). Never
+asked = nothing written, nothing removed.
+
 ## 7. Surfaces and what is not done
 
-- Desktop and Server Edition: both via `installManagedAgentHooks`; state comes from the normalizer,
+- Desktop and Server Edition: both via the consent lifecycle (`installManagedAgentHooks`); state comes from the normalizer,
   and both raw listeners call the one shared `applyCursorRaw` (meter, subagents, activity line).
   Mobile: status mirror is agent-agnostic.
 - SSH: `RemoteHooks.installCursorRemote` (see "NEEDS YOU, SSH hooks and lost stop" below).
@@ -218,8 +223,9 @@ are read. Compaction replaces the model context, so pre-compaction turns are not
 | Transfer source (`TRANSFER_SOURCE_CAPABLE`) | yes | N/A (handoff is desktop main) | N/A | refused with its own sentence |
 | Session name read (`TITLE_READ_CAPABLE`) | yes | sweep to the mirror only (the IPC read is stubbed there for every agent) | via mirror | none (node keeps its title) |
 
-`get-linked-context` discovery needs no installer: cursor-agent lists `~/.claude/skills/get-linked-context`
-in its own `<agent_skills>` (measured), like grok. The composer's model label, effort, plan/question
+`get-linked-context` discovery: cursor-agent lists `~/.claude/skills/get-linked-context` in its own
+`<agent_skills>` (measured). Since the consent change (#744) each agent gets the skills in its own
+dir, so cursor's copy goes to `~/.cursor/skills` (below, "Canvas control"). The composer's model label, effort, plan/question
 cards and `at` timestamps are not supported. `/rename` joined `RENAME_CAPABLE` later ("Orchestration parity").
 
 ## Device checklist (not verified)
@@ -439,7 +445,10 @@ the host's `~/.cursor/hooks.json` with the local installer's pure `applyCursorHo
 `updateRemoteSettingsFile` (content over stdin, lock dir, other tools' entries kept, an unparseable
 file left byte-for-byte, a second run writes nothing). A command holding `//` is refused before
 anything runs. Tested under a real `/bin/sh` against a fake host tree
-(`remote-cursor-hooks.test.ts`). Removal on the host is not built (same as the other remote agents).
+(`remote-cursor-hooks.test.ts`). It runs only when the host's consent plan installs `cursor`; a plan
+that removes it strips our entries from the host's `~/.cursor/hooks.json` (`stripRemoteSettingsFile`,
+never creating the file) and deletes `cursor.sh`. Its skills go to `~/.agents/skills`, a root the
+bundle loads (unverified on a host).
 
 ### Lost stop
 
@@ -479,8 +488,9 @@ asked to list its skills, cursor named `~/.claude/skills/manage-nodeterm-canvas/
 third-party roots are gated by `thirdPartyExtensibility` (CLI default on; a team setting could turn
 it off). Trap: cursor TRUNCATES a long skill list ("52 additional skills were omitted" here), from
 the tail. `~/.claude/skills` sits third, so it survived; a user with hundreds of `~/.cursor/skills`
-could push it out. No `~/.cursor/skills` installer was added (note: add one beside the claude
-skill install if that is ever seen).
+could push it out. Since #744 the skills are written into `~/.cursor/skills` under cursor's own
+consent (`skillRootsFor`), which also keeps canvas control working when claude is declined. That
+copy is not measured in a live session yet; the `~/.claude/skills` copy (when claude is enabled) is.
 
 ### Subagents (`SUBAGENT_CAPABLE`)
 
