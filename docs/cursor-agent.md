@@ -276,7 +276,8 @@ window. The credential is the CLI's: macOS login Keychain (account `cursor-user`
 `cursor-access-token`, created by `/usr/bin/security`, so reading it with the same binary raises no
 prompt), else `auth.json` (`~/.cursor/` with `AGENT_CLI_CREDENTIAL_STORE=file`, `$XDG_CONFIG_HOME/cursor/`
 on Linux, `%APPDATA%/Cursor/` on Windows). Read only, never refreshed; the token stays in process
-(only the service name is on argv). Not signed in or an expired token (401/403) = no row; network or
+(only the service name is on argv). Not signed in, an expired token (401/403) or a reply over 256 KB
+(read stops there, never parsed) = no row; network or
 5xx = error status keeping the last good numbers of the same login for up to an hour. Not shown:
 dollar spend, bonus credit, on-demand (spend limit) usage, the plan name, and enterprise accounts with
 no `planUsage`. SSH hosts: local login only, no remote leg. Model is not shown in the context meter

@@ -92,6 +92,14 @@ describe('fetchCursorUsage', () => {
     expect((seen!.init?.headers as Record<string, string>).authorization).toBe(`Bearer ${token}`)
   })
 
+  it('never parses a reply past 256 KB, and still maps a normal one', async () => {
+    const huge = { ...BODY, pad: 'x'.repeat(300 * 1024) }
+    const big = await fetchCursorUsage({ readToken: async () => jwt('a'), fetchImpl: reply(200, huge) })
+    expect(big).toMatchObject({ status: 'unavailable', limits: [] })
+    const ok = await fetchCursorUsage({ readToken: async () => jwt('a'), fetchImpl: reply(200) })
+    expect(ok.status).toBe('ok')
+  })
+
   it('reads an expired token (401) as unavailable', async () => {
     const u = await fetchCursorUsage({ readToken: async () => jwt('a'), fetchImpl: reply(401) })
     expect(u.status).toBe('unavailable')

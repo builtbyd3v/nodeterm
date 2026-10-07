@@ -25,6 +25,27 @@ const execFileP = promisify(execFile)
 
 const USAGE_URL = 'https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage'
 const FETCH_TIMEOUT_MS = 8000
+/** A usage reply is a few fields; a body past this is not one and is never parsed. */
+const MAX_BODY_BYTES = 256 * 1024
+
+/** The reply's JSON, or null when it runs past MAX_BODY_BYTES (the read stops there). */
+async function cappedJson(res: Response): Promise<unknown> {
+  const reader = res.body?.getReader()
+  if (!reader) return null
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel()
+      return null
+    }
+    chunks.push(value)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
 
 /** The CLI's `auth.json` path when it uses the file store (its own `getAuthFilePath`). */
 export function cursorAuthFile(platform = process.platform, env = process.env, home = os.homedir()): string {
@@ -164,7 +185,7 @@ export async function fetchCursorUsage(
     if (res.status === 401 || res.status === 403) fresh = snapshot([], 'unavailable')
     else if (!res.ok) fresh = snapshot([], 'error')
     else {
-      const limits = mapCursorLimits(await res.json())
+      const limits = mapCursorLimits(await cappedJson(res))
       fresh = snapshot(limits, limits.length > 0 ? 'ok' : 'unavailable')
     }
   } catch {
