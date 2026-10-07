@@ -5806,6 +5806,7 @@ export class PtyManager {
     // with a separate, settled Enter, so they are left alone. The paste and its Enter run inside
     // `serializePaneWrite`, so two overlapping sends cannot interleave as paste, paste, Enter, Enter.
     if (enter && text && !live?.nativeWindowsPane && !live?.sessionHost && this.submitsSeparatelyKey(persistKey)) {
+      if (await this.cursorDialogShowing(persistKey)) return false // nothing written
       const pasted = await this.deliverText(persistKey, text, false, live)
       if (pasted !== true) return pasted
       await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
@@ -5839,6 +5840,8 @@ export class PtyManager {
    * Enter must not answer one that opened during the gap. An empty or failed capture is not
    * evidence (the `sendChatPrompt` rule): the Enter goes as before.
    * note: Cursor detectors only; SEPARATE_SUBMIT_AGENTS is cursor alone today.
+   * note: fail-open on a blind capture: failing closed would block every send whenever the pane
+   * cannot be read (e.g. ssh missing).
    */
   private async cursorDialogShowing(persistKey: string): Promise<boolean> {
     const screen = await this.captureSession(persistKey).catch(() => '')
@@ -6307,11 +6310,11 @@ export class PtyManager {
    * accidental submit a messaging delivery must never perform — an empty envelope refuses here.
    * (`buildEnvelope` can never return '', so this is a guard against a future caller, not a path.)
    */
-  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean> {
+  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
     return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected))
   }
 
-  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean> {
+  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
     if (envelope.length === 0) return false
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return false
@@ -6343,11 +6346,14 @@ export class PtyManager {
     }
     if (!this.submitsSeparatelyKey(persistKey)) return deliver(envelope, true)
     // `sendText`'s split, inlined: this op already holds the pane's `serializePaneWrite` slot, so
-    // calling `sendText` here would queue behind itself.
+    // calling `sendText` here would queue behind itself. A dialog before the paste writes nothing
+    // ('dialog'). Once the paste is in, the answer is `true` whatever the Enter does (the
+    // `DeliveryDeps.sendEnvelope` contract), so the receipt watch reports `stalled`, not `targetGone`.
+    if (await this.cursorDialogShowing(persistKey)) return 'dialog'
     if (!(await deliver(envelope, false))) return false
     await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
-    if (await this.cursorDialogShowing(persistKey)) return false
-    return deliver('', true)
+    if (!(await this.cursorDialogShowing(persistKey))) await deliver('', true)
+    return true
   }
 
   /**

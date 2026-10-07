@@ -535,8 +535,11 @@ Enter as a SECOND invocation renamed the chat (meta `name` changed). Hence `SEPA
 (`submitsSeparately`): `PtyManager.sendText` pastes, then sends a bare Enter only after the paste
 succeeded, one transaction at a time per node. Agent `send`/`reply` envelopes split the same way. The
 agent comes from `create()` or, before the node mounts after a restart, the workspace records when every
-placement agrees. No Enter while an approval, AskQuestion or plan prompt shows (the text stays composed,
-`pasted-not-submitted`). `pushSessionRename` sends one ordinary line. The built-in `rename-chat` skill is model-driven
+placement agrees. An approval, AskQuestion or plan prompt already on screen gets nothing written (an
+envelope answers `targetBusy`/`blocked`, retryable); one that opens after the paste gets no Enter (the text
+stays composed: `pasted-not-submitted`, an envelope reports `stalled`). An empty capture is not a dialog.
+Known limit: before mount the split trusts the records' `agentId`, so a shared project file naming
+`cursor` for a pane that is not Cursor gets the split. `pushSessionRename` sends one ordinary line. The built-in `rename-chat` skill is model-driven
 (`cursor-app-control.rename_chat`, not in the CLI) and is not used.
 
 ### Loop (`RECURRING_CAPABLE`): not joined

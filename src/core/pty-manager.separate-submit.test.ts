@@ -262,11 +262,25 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
     }
   })
 
-  it('a Cursor dialog on screen after the paste gets no Enter', async () => {
-    for (const screen of [PLAN, APPROVAL, QUESTION]) {
-      const { mgr, calls } = await rig({ create: 'cursor', screen: async () => screen })
+  /** A clean pane at the pre-paste read, then `dialog` from the post-paste read on. */
+  const opensAfterPaste = (dialog: string) => {
+    let reads = 0
+    return async () => (reads++ === 0 ? 'idle composer' : dialog)
+  }
+
+  it('a Cursor dialog that opens after the paste gets no Enter', async () => {
+    for (const dialog of [PLAN, APPROVAL, QUESTION]) {
+      const { mgr, calls } = await rig({ create: 'cursor', screen: opensAfterPaste(dialog) })
       expect(await send(mgr)).toBe('pasted-not-submitted')
       expect(calls).toEqual([['hi', false]])
+    }
+  })
+
+  it('a Cursor dialog already on screen gets nothing written at all', async () => {
+    for (const dialog of [PLAN, APPROVAL, QUESTION]) {
+      const { mgr, calls } = await rig({ create: 'cursor', screen: async () => dialog })
+      expect(await send(mgr)).toBe(false)
+      expect(calls).toEqual([])
     }
   })
 
@@ -309,8 +323,12 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
       expect(await envelope('claude', ssh)).toMatchObject({ ok: true, shapes: ['paste+Enter'] })
     })
 
-    it(`${leg}: a cursor envelope gets no Enter while a dialog shows`, async () => {
-      expect(await envelope('cursor', ssh, async () => PLAN)).toMatchObject({ ok: false, shapes: ['paste'] })
+    it(`${leg}: a cursor envelope pasted before a dialog opens gets no Enter, and counts as written`, async () => {
+      expect(await envelope('cursor', ssh, opensAfterPaste(PLAN))).toMatchObject({ ok: true, shapes: ['paste'] })
+    })
+
+    it(`${leg}: a cursor envelope meeting a dialog writes nothing and answers 'dialog'`, async () => {
+      expect(await envelope('cursor', ssh, async () => PLAN)).toEqual({ ok: 'dialog', shapes: [], files: [] })
     })
   }
 
