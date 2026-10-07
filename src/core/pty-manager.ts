@@ -21,6 +21,7 @@ import {
 } from '../shared/types'
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
+import { cursorApprovalIn, cursorPlanPromptIn, cursorQuestionIn } from './agents/cursor-approval'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
 import {
   probeSaysAbsent,
@@ -5804,22 +5805,44 @@ export class PtyManager {
     // 2026-10-02 found only rename split it). Windows panes and the session host already submit
     // with a separate, settled Enter, so they are left alone. The paste and its Enter run inside
     // `serializePaneWrite`, so two overlapping sends cannot interleave as paste, paste, Enter, Enter.
-    const agent = this.agentByKey.get(persistKey)
-    if (
-      enter &&
-      text &&
-      agent &&
-      !live?.nativeWindowsPane &&
-      !live?.sessionHost &&
-      submitsSeparately(capabilityAgentId(agent as AgentId))
-    ) {
+    if (enter && text && !live?.nativeWindowsPane && !live?.sessionHost && this.submitsSeparatelyKey(persistKey)) {
       const pasted = await this.deliverText(persistKey, text, false, live)
       if (pasted !== true) return pasted
       await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
+      if (await this.cursorDialogShowing(persistKey)) return 'pasted-not-submitted'
       const entered = await this.deliverText(persistKey, '', true, live)
       return entered === true ? true : 'pasted-not-submitted'
     }
     return this.deliverText(persistKey, text, enter, live)
+  }
+
+  /**
+   * The agent a pane runs: create()'s record this app run, else this machine's workspace records
+   * (`setRelayNodeResolver`) when every placement agrees. After a restart a node not mounted yet
+   * (off-screen canvas `write`, trigger, phone send) has no create() record.
+   */
+  private agentForKey(persistKey: string): string | undefined {
+    const known = this.agentByKey.get(persistKey)
+    if (known) return known
+    const ids = new Set((this.relayNodes?.placements(persistKey) ?? []).map((p) => p.node.agentId))
+    return ids.size === 1 ? [...ids][0] : undefined
+  }
+
+  /** Does this pane's agent ignore an Enter bundled with its paste (SEPARATE_SUBMIT_AGENTS)? */
+  private submitsSeparatelyKey(persistKey: string): boolean {
+    const agent = this.agentForKey(persistKey)
+    return !!agent && submitsSeparately(capabilityAgentId(agent as AgentId))
+  }
+
+  /**
+   * Is a Cursor dialog (approval, AskQuestion, plan "Ready to build?") on screen? The split's bare
+   * Enter must not answer one that opened during the gap. An empty or failed capture is not
+   * evidence (the `sendChatPrompt` rule): the Enter goes as before.
+   * note: Cursor detectors only; SEPARATE_SUBMIT_AGENTS is cursor alone today.
+   */
+  private async cursorDialogShowing(persistKey: string): Promise<boolean> {
+    const screen = await this.captureSession(persistKey).catch(() => '')
+    return cursorApprovalIn(screen) || cursorQuestionIn(screen) || cursorPlanPromptIn(screen)
   }
 
   private async deliverText(
@@ -6298,24 +6321,33 @@ export class PtyManager {
       return expected ? sessionHostMessageEnvelope(target, envelope, expected) : false
     }
     const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
-    try {
-      if (sshRemote) {
-        const ssh = findSsh()
-        if (!ssh) return false
-        const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, envelope, true)
+    const deliver = async (body: string, enter: boolean): Promise<boolean> => {
+      try {
+        if (sshRemote) {
+          const ssh = findSsh()
+          if (!ssh) return false
+          const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, body, enter)
+          if (!plan) return false
+          return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        }
+        if (!this.tmuxPath) return false
+        const tmuxPath = this.tmuxPath
+        const plan = localPasteDelivery(TMUX_SOCKET, target, body, enter)
         if (!plan) return false
-        return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
+      } catch {
+        // A builder throwing (an unsafe target) lands here; `runPasteDelivery` itself answers false
+        // rather than throwing, so the buffer sweep is never skipped.
+        return false
       }
-      if (!this.tmuxPath) return false
-      const tmuxPath = this.tmuxPath
-      const plan = localPasteDelivery(TMUX_SOCKET, target, envelope, true)
-      if (!plan) return false
-      return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
-    } catch {
-      // A builder throwing (an unsafe target) lands here; `runPasteDelivery` itself answers false
-      // rather than throwing, so the buffer sweep is never skipped.
-      return false
     }
+    if (!this.submitsSeparatelyKey(persistKey)) return deliver(envelope, true)
+    // `sendText`'s split, inlined: this op already holds the pane's `serializePaneWrite` slot, so
+    // calling `sendText` here would queue behind itself.
+    if (!(await deliver(envelope, false))) return false
+    await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
+    if (await this.cursorDialogShowing(persistKey)) return false
+    return deliver('', true)
   }
 
   /**

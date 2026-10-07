@@ -532,7 +532,10 @@ write holds. MEASURED: nodeterm's one-shot `sendText` (bracketed paste and Enter
 invocation) left `/rename x` sitting unsubmitted in the composer; the same paste followed by a bare
 Enter as a SECOND invocation renamed the chat (meta `name` changed). Hence `SEPARATE_SUBMIT_AGENTS`
 (`submitsSeparately`): `PtyManager.sendText` pastes, then sends a bare Enter only after the paste
-succeeded, one transaction at a time per node. `pushSessionRename` sends one ordinary line. The built-in `rename-chat` skill is model-driven
+succeeded, one transaction at a time per node. Agent `send`/`reply` envelopes split the same way. The
+agent comes from `create()` or, before the node mounts after a restart, the workspace records when every
+placement agrees. No Enter while an approval, AskQuestion or plan prompt shows (the text stays composed,
+`pasted-not-submitted`). `pushSessionRename` sends one ordinary line. The built-in `rename-chat` skill is model-driven
 (`cursor-app-control.rename_chat`, not in the CLI) and is not used.
 
 ### Loop (`RECURRING_CAPABLE`): not joined

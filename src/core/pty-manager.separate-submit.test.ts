@@ -5,13 +5,27 @@ import { submitsSeparately, typesChatInput } from '../shared/agents/config'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 
-vi.mock('child_process', () => ({
-  execFile: (_f: string, _a: string[], a?: unknown, b?: unknown): unknown => {
+/** Every promisified execFile (runAsync / runWithStdin), in order: the envelope tests read it. */
+const execCalls = vi.hoisted(() => [] as string[][])
+vi.mock('child_process', async () => {
+  const { promisify } = await import('util')
+  const execFile = (_f: string, _a: string[], a?: unknown, b?: unknown): unknown => {
     const cb = (typeof a === 'function' ? a : b) as ((e: null, r: { stdout: string; stderr: string }) => void) | undefined
     cb?.(null, { stdout: '', stderr: '' })
     return {}
-  },
-  execFileSync: (): string => ''
+  }
+  Object.assign(execFile, {
+    [promisify.custom]: (file: string, args: string[]) => {
+      execCalls.push([file, ...args])
+      const child = { stdin: { on: () => undefined, end: () => undefined } }
+      return Object.assign(Promise.resolve({ stdout: '', stderr: '' }), { child })
+    }
+  })
+  return { execFile, execFileSync: (): string => '' }
+})
+vi.mock('./exec-path', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./exec-path')>()),
+  findExecutableSync: (bin: string) => (bin === 'ssh' ? '/usr/bin/ssh' : null)
 }))
 vi.mock('./session-host-backend', async () => (await import('./__fixtures__/no-session-host')).noSessionHost())
 vi.mock('node-pty', () => ({ spawn: () => ({}) }))
@@ -53,6 +67,9 @@ interface Internals {
   captureSession(k: string): Promise<string>
   sendEnvelope(k: string, envelope: string): Promise<boolean>
   sendEnvelopeNow(k: string, envelope: string): Promise<boolean>
+  setRelayNodeResolver(r: unknown): void
+  tmuxPath: string | null
+  sessionByPersistKey(k: string): unknown
 }
 
 describe('PtyManager.sendText: overlapping separate-submit sends do not interleave (review 2026-10-03)', () => {
@@ -183,5 +200,124 @@ describe('PtyManager forgets a deleted node\'s agent', () => {
   it('drops agentByKey on delete, keeps it across a recycle', () => {
     const end = src.slice(src.indexOf("if (intent === 'delete') {"), src.indexOf('} else this.tombstones.delete(persistKey)'))
     expect(end).toContain('this.agentByKey.delete(persistKey)')
+  })
+})
+
+// Review merge2: the split keyed on create()'s record alone, so after a restart an unmounted Cursor
+// node got the one-shot paste+Enter; agent envelopes never split; and the bare Enter could answer a
+// Cursor dialog that opened during the gap.
+describe('PtyManager: separate submit after restart, for envelopes, and never into a dialog', () => {
+  const PLAN = '  Ready to build?\n  → Yes, build locally (b)\n    No, propose changes (p or Esc)\n'
+  const APPROVAL = ' Run this command?\n  → Run (once) (y)\n    Skip (esc or n)\n'
+  const QUESTION = ' │ Question 1 of 1 │\n │   › [ ] Red │\n │ Space select · Enter next/submit · Esc to skip │\n └────┘\n'
+
+  beforeEach(() => {
+    initPlatform(fakePlatform())
+    vi.useFakeTimers()
+    execCalls.length = 0
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    resetPlatformForTests()
+  })
+
+  const resolver = (...agents: (string | undefined)[]) => ({
+    placements: () => agents.map((agentId, i) => ({ projectId: `p${i}`, node: { agentId } })),
+    refFor: () => undefined,
+    projectIsRemote: () => false
+  })
+
+  async function rig(opts: { create?: string; placed?: (string | undefined)[]; screen?: () => Promise<string> }) {
+    const { PtyManager } = await import('./pty-manager')
+    const mgr = new PtyManager() as unknown as Internals
+    if (opts.create) mgr.agentByKey.set('n1', opts.create)
+    if (opts.placed) mgr.setRelayNodeResolver(resolver(...opts.placed))
+    mgr.liveSessionForPersistKey = () => ({})
+    mgr.captureSession = opts.screen ?? (async () => 'idle composer')
+    const calls: [string, boolean][] = []
+    mgr.deliverText = async (_k, text, enter) => {
+      calls.push([text, enter])
+      return true
+    }
+    return { mgr, calls }
+  }
+
+  async function send(mgr: Internals): Promise<unknown> {
+    const sent = mgr.sendText('n1', 'hi')
+    await vi.advanceTimersByTimeAsync(400)
+    return sent
+  }
+
+  it('no create(), every placement says cursor: sendText splits', async () => {
+    const { mgr, calls } = await rig({ placed: ['cursor', 'cursor'] })
+    expect(await send(mgr)).toBe(true)
+    expect(calls).toEqual([['hi', false], ['', true]])
+  })
+
+  it('placements that disagree, or name no agent, keep the one-shot paste+Enter', async () => {
+    for (const placed of [['cursor', 'claude'], [undefined], ['cursor', undefined]]) {
+      const { mgr, calls } = await rig({ placed })
+      expect(await send(mgr)).toBe(true)
+      expect(calls).toEqual([['hi', true]])
+    }
+  })
+
+  it('a Cursor dialog on screen after the paste gets no Enter', async () => {
+    for (const screen of [PLAN, APPROVAL, QUESTION]) {
+      const { mgr, calls } = await rig({ create: 'cursor', screen: async () => screen })
+      expect(await send(mgr)).toBe('pasted-not-submitted')
+      expect(calls).toEqual([['hi', false]])
+    }
+  })
+
+  it('a clean, empty or failed capture still gets the Enter', async () => {
+    const screens = [async () => 'idle composer', async () => '', () => Promise.reject(new Error('gone'))]
+    for (const screen of screens) {
+      const { mgr, calls } = await rig({ create: 'cursor', screen })
+      expect(await send(mgr)).toBe(true)
+      expect(calls).toEqual([['hi', false], ['', true]])
+    }
+  })
+
+  /** The paste/Enter shape of each tmux invocation an envelope made, local or over ssh. */
+  const shapes = (): string[] =>
+    execCalls
+      .map((c) => c.join(' '))
+      .filter((c) => c.includes('paste-buffer') || c.includes('Enter'))
+      .map((c) => (c.includes('paste-buffer') ? (c.includes('Enter') ? 'paste+Enter' : 'paste') : 'Enter'))
+
+  async function envelope(agent: string, ssh: boolean, screen = async () => 'idle composer') {
+    const { mgr } = await rig({ create: agent, screen })
+    mgr.tmuxPath = '/usr/bin/tmux'
+    mgr.sessionByPersistKey = () =>
+      ssh ? { sshRemote: { conn: { host: 'box', user: 'me' }, controlPath: '/tmp/cm.sock' } } : {}
+    const sent = mgr.sendEnvelope('n1', 'envelope body')
+    await vi.advanceTimersByTimeAsync(400)
+    const ok = await sent
+    return { ok, shapes: shapes(), files: execCalls.map((c) => c[0]) }
+  }
+
+  for (const ssh of [false, true]) {
+    const leg = ssh ? 'ssh' : 'local'
+    it(`${leg}: a cursor envelope is pasted, then submitted by a bare Enter`, async () => {
+      const r = await envelope('cursor', ssh)
+      expect(r).toMatchObject({ ok: true, shapes: ['paste', 'Enter'] })
+      expect(new Set(r.files)).toEqual(new Set([ssh ? '/usr/bin/ssh' : '/usr/bin/tmux']))
+    })
+
+    it(`${leg}: a claude envelope keeps its one paste+Enter`, async () => {
+      expect(await envelope('claude', ssh)).toMatchObject({ ok: true, shapes: ['paste+Enter'] })
+    })
+
+    it(`${leg}: a cursor envelope gets no Enter while a dialog shows`, async () => {
+      expect(await envelope('cursor', ssh, async () => PLAN)).toMatchObject({ ok: false, shapes: ['paste'] })
+    })
+  }
+
+  it('an empty envelope is still refused before anything is written', async () => {
+    const { mgr } = await rig({ create: 'cursor' })
+    mgr.tmuxPath = '/usr/bin/tmux'
+    expect(await mgr.sendEnvelope('n1', '')).toBe(false)
+    expect(execCalls).toEqual([])
   })
 })
