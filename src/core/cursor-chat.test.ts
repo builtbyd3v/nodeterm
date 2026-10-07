@@ -186,6 +186,11 @@ describe('the store reader', () => {
     const s = await readCursorStore(file, one + 5)
     expect(s?.messages).toEqual([userMsg('new')])
   })
+  it('never parses a blob larger than the whole budget, even the newest one', async () => {
+    const file = buildStore('b-huge', '22222222-e4c7-4f28-9d99-027f84c10837', [userMsg('old'), userMsg('x'.repeat(500))])
+    const s = await readCursorStore(file, JSON.stringify(userMsg('old')).length + 5)
+    expect(s?.messages).toEqual([userMsg('old')])
+  })
   it('returns null for a file that is not a store, and never writes to a real one', async () => {
     const junk = path.join(root, 'junk.db')
     fs.writeFileSync(junk, 'not sqlite')

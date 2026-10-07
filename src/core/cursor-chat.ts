@@ -369,6 +369,7 @@ export async function readCursorStore(dbPath: string, maxBytes: number = CURSOR_
       const n = (size.get(ids[k]) as { n?: number } | undefined)?.n
       if (n === undefined) continue // a message this machine does not hold
       if (total + n > maxBytes && newestFirst.length) break
+      if (n > maxBytes) continue // over the cap on its own: never parsed, even as the newest
       total += n
       try {
         newestFirst.push(JSON.parse(asText((blob.get(ids[k]) as { data: unknown }).data)))
