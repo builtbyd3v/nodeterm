@@ -51,7 +51,8 @@ function rms(chunk: Float32Array): number {
 /**
  * Captures the default microphone as mono 16 kHz PCM until `stop()`.
  * `teardown()` resets to constructor state, so a fresh `start()` after
- * `stop()`/`cancel()` is fully supported.
+ * `stop()`/`cancel()` is fully supported — including one that landed while an
+ * earlier `start()` was still opening the microphone (see `generation`).
  */
 export class PcmCapture {
   private chunks: Float32Array[] = []
@@ -65,19 +66,41 @@ export class PcmCapture {
   private scriptNode: ScriptProcessorNode | null = null
   /** Silent sink the ScriptProcessorNode fallback routes through — see `startScriptProcessor`. */
   private scriptSink: GainNode | null = null
+  /**
+   * Bumped by every `teardown()`. A `start()` remembers the value it began with and, after each
+   * await, gives up if it moved: `stop()`/`cancel()` landed while the microphone was still
+   * opening. That window is routine — getUserMedia + the AudioContext + the worklet module take
+   * hundreds of ms (seconds when a Bluetooth headset switches profile), and hold-to-talk closes
+   * inside it on every quick tap. Adopting the late stream anyway left a live mic that nothing
+   * would ever stop.
+   */
+  private generation = 0
 
-  /** Requests the microphone and starts collecting chunks. Idempotent while already running. */
-  async start(): Promise<void> {
-    if (this.running) return
+  /**
+   * Requests the microphone and starts collecting chunks. Resolves `true` once capturing, and
+   * `false` when `stop()`/`cancel()` arrived before the microphone finished opening — the late
+   * stream is released here, so nothing is live and the caller has nothing to undo. Idempotent
+   * while already running (`true`).
+   */
+  async start(): Promise<boolean> {
+    if (this.running) return true
 
     // Set the flag synchronously before the first await to guard against
     // re-entry: a second `start()` called during setup will see this.running
     // true and return early. Doubled as an in-flight guard so it must flip
     // before any suspension point.
     this.running = true
+    const generation = this.generation
+    const cancelled = (): boolean => generation !== this.generation
 
     try {
       const stream = await this.acquireStream()
+      if (cancelled()) {
+        // Its owner already tore down — these tracks are on no field, so release them here or
+        // the OS microphone stays open.
+        for (const track of stream.getTracks()) track.stop()
+        return false
+      }
       // Adopt the stream IMMEDIATELY: if AudioContext construction or
       // createMediaStreamSource throws below, the catch's teardown() must be
       // able to stop these tracks — a live mic (OS indicator lit) must never
@@ -94,13 +117,18 @@ export class PcmCapture {
       }
 
       try {
-        await this.startWorklet(audioContext, sourceNode, onChunk)
+        await this.startWorklet(audioContext, sourceNode, onChunk, cancelled)
       } catch {
+        if (cancelled()) return false
         // `addModule` (or worklet construction) failed — fall back to the
         // deprecated-but-universal ScriptProcessorNode. Same chunk flow.
         this.startScriptProcessor(audioContext, sourceNode, onChunk)
       }
+      // The teardown that cancelled us already stopped the tracks and closed the context; a
+      // newer start() may own the fields by now, so touch nothing.
+      return !cancelled()
     } catch (err) {
+      if (cancelled()) return false
       // On any failure, reset running and tear down partial state.
       this.running = false
       this.teardown()
@@ -139,13 +167,17 @@ export class PcmCapture {
   private async startWorklet(
     audioContext: AudioContext,
     sourceNode: MediaStreamAudioSourceNode,
-    onChunk: (chunk: Float32Array) => void
+    onChunk: (chunk: Float32Array) => void,
+    cancelled: () => boolean
   ): Promise<void> {
     // Vite/electron-vite statically recognizes this `new URL(relative,
     // import.meta.url)` pattern and emits pcm-worklet.ts as its own
     // same-origin asset, satisfying CSP `worker-src 'self' blob:'`.
     const workletUrl = new URL('./pcm-worklet.ts', import.meta.url)
     await audioContext.audioWorklet.addModule(workletUrl)
+    // Torn down during the module load: the context is closed, and `workletNode` may already
+    // belong to a newer start() — build nothing.
+    if (cancelled()) return
 
     const node = new AudioWorkletNode(audioContext, WORKLET_PROCESSOR_NAME, {
       numberOfInputs: 1,
@@ -183,6 +215,7 @@ export class PcmCapture {
   }
 
   private teardown(): void {
+    this.generation += 1
     if (this.workletNode) this.workletNode.port.onmessage = null
     this.workletNode?.disconnect()
     this.workletNode = null

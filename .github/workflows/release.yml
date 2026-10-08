@@ -329,7 +329,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --prerelease=false --latest
 
-      # Homebrew: the cask is NOT updated from here. The org disables deploy keys, so
-      # nodeterm/homebrew-tap carries its own `sync-cask` workflow (30-min schedule +
-      # manual dispatch) that tracks /releases/latest — which excludes prereleases, so it
-      # only ever casks a release this publish job has promoted.
+      # Homebrew: the cask is NOT updated from here. It lives in the official homebrew/cask,
+      # whose autobump follows /releases/latest — which excludes prereleases, so it only ever
+      # picks up a release this publish job has promoted. (nodeterm/homebrew-tap is retired.)

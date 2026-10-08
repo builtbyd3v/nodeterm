@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 //
-// The card right-click menu carries the node's account-switch rows — the SAME builder the canvas
-// node menu uses (Canvas `accountSwitchRows`), passed in as `accountMenuItems`. A card is a second
-// view of its node, so the switch must be reachable from the board without going back to the canvas.
+// The card right-click menu carries the node's own rows — the SAME builder the canvas node menu
+// uses (lib/nodeActionItems, narrowed by Canvas to BOARD_NODE_ACTION_IDS), passed in as
+// `nodeActionItems`. A card is a second view of its node, so color, icon, live link and the
+// account switch must be reachable from the board without going back to the canvas.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -12,6 +13,14 @@ import type { MenuItem } from '../ContextMenu'
 
 vi.mock('../../session/session', () => ({
   useSession: () => ({ source: 'local', api: window.nodeTerminal })
+}))
+vi.mock('./CardModal', () => ({
+  CardModal: (p: { session: { id: string }; initialView?: string; onDelete?: () => void; onSetColor?: (c: string) => void }) => (
+    <div className="card-modal-mock" data-node={p.session.id} data-view={p.initialView ?? ''}>
+      <button className="modal-delete" onClick={p.onDelete} />
+      <button className="modal-color" onClick={() => p.onSetColor?.('#0a84ff')} />
+    </div>
+  )
 }))
 
 let root: Root
@@ -48,7 +57,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function render(accountMenuItems?: (id: string) => MenuItem[], liveLinkMenuItems?: (id: string) => MenuItem[]): void {
+function render(
+  nodeActionItems?: (id: string) => MenuItem[],
+  onAiName?: (id: string) => void,
+  more: { onDeleteNode?: (id: string) => void; onSetColor?: (id: string, c: string) => void } = {}
+): void {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -63,12 +76,13 @@ function render(accountMenuItems?: (id: string) => MenuItem[], liveLinkMenuItems
         onCreateNode={noop}
         onRenameNode={noop}
         onEditSticky={noop}
-        onDeleteNode={noop}
+        onDeleteNode={more.onDeleteNode ?? noop}
+        onSetColor={more.onSetColor}
         onModalNodeChange={noop}
         onBrowserNav={noop}
         onSetIcon={noop}
-        accountMenuItems={accountMenuItems}
-        liveLinkMenuItems={liveLinkMenuItems}
+        nodeActionItems={nodeActionItems}
+        onAiName={onAiName}
       />
     )
   )
@@ -80,16 +94,23 @@ function openCardMenu(): void {
     card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }))
   })
 }
+function clickRow(label: string): void {
+  const rowEl = [...document.querySelectorAll<HTMLElement>('.ctx-item')].find((el) => el.textContent?.includes(label))
+  if (!rowEl) throw new Error(`no row ${label}`)
+  act(() => rowEl.click())
+}
 
-describe('KanbanView — card menu account switch', () => {
-  it('shows the node’s account-switch rows, built for that card’s node', () => {
+describe('KanbanView — card menu node rows', () => {
+  it('shows the node’s rows from the shared builder, built for that card’s node', () => {
     const rows = vi.fn((id: string): MenuItem[] => [
-      { label: `Switch Claude account (${id})`, onClick: () => {} }
+      { label: `Switch Claude account (${id})`, onClick: () => {} },
+      { label: `Share live link… (${id})`, onClick: () => {} }
     ])
     render(rows)
     openCardMenu()
     expect(rows).toHaveBeenCalledWith('n1')
     expect(document.body.textContent).toContain('Switch Claude account (n1)')
+    expect(document.body.textContent).toContain('Share live link… (n1)')
   })
 
   it('shows none without a builder (no canvas behind the board)', () => {
@@ -97,23 +118,42 @@ describe('KanbanView — card menu account switch', () => {
     openCardMenu()
     expect(document.body.textContent).toContain('Open card')
     expect(document.body.textContent).not.toContain('Switch Claude account')
-  })
-})
-
-describe('KanbanView — card menu Share live link (Task 17)', () => {
-  it('shows the node’s "Share live link…" row from the canvas builder, after the account rows', () => {
-    const live = vi.fn((id: string): MenuItem[] => [{ label: `Share live link… (${id})`, onClick: () => {} }])
-    render(() => [{ label: 'Switch Claude account', onClick: () => {} }], live)
-    openCardMenu()
-    expect(live).toHaveBeenCalledWith('n1')
-    const text = document.body.textContent ?? ''
-    expect(text).toContain('Share live link… (n1)')
-    expect(text.indexOf('Share live link… (n1)')).toBeGreaterThan(text.indexOf('Switch Claude account'))
+    expect(document.body.textContent).not.toContain('Share live link')
   })
 
-  it('shows none without a builder', () => {
+  it('"Open card in chat / markdown view" opens the card modal on that view', () => {
     render()
     openCardMenu()
-    expect(document.body.textContent).not.toContain('Share live link')
+    clickRow('Open card in chat / markdown view')
+    const modal = document.querySelector<HTMLElement>('.card-modal-mock')
+    expect(modal?.dataset.node).toBe('n1')
+    expect(modal?.dataset.view).toBe('md')
+  })
+
+  it('a plain "Open card" opens it on the live terminal', () => {
+    render()
+    openCardMenu()
+    clickRow('Open card')
+    expect(document.querySelector<HTMLElement>('.card-modal-mock')?.dataset.view).toBe('')
+  })
+
+  it('"Name with AI" names that card’s session', () => {
+    const ai = vi.fn()
+    render(undefined, ai)
+    openCardMenu()
+    clickRow('Name with AI')
+    expect(ai).toHaveBeenCalledWith('n1')
+  })
+
+  it("the card modal's Delete and Color reach the board handlers for THAT card", () => {
+    const del = vi.fn()
+    const color = vi.fn()
+    render(undefined, undefined, { onDeleteNode: del, onSetColor: color })
+    openCardMenu()
+    clickRow('Open card')
+    act(() => document.querySelector<HTMLButtonElement>('.modal-color')!.click())
+    act(() => document.querySelector<HTMLButtonElement>('.modal-delete')!.click())
+    expect(color).toHaveBeenCalledWith('n1', '#0a84ff')
+    expect(del).toHaveBeenCalledWith('n1')
   })
 })

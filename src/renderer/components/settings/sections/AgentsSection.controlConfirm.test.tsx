@@ -48,6 +48,7 @@ function bypassSwitch(): HTMLElement {
 
 const CLOSE_LABEL = 'Ask before an agent closes nodes'
 const WRITE_LABEL = 'Ask before an agent types into a node'
+const OPEN_PROJECT_LABEL = 'Ask before an agent opens or adds a project'
 
 async function render(): Promise<void> {
   host = document.createElement('div')
@@ -79,9 +80,13 @@ describe('destructive canvas-control confirmations in Settings', () => {
   it('shows one row per waivable verb, derived from the shared table', () => {
     // Derived, not hand-listed: a verb that becomes waivable in code but invisible here would be a
     // loosening the user cannot see or revoke.
-    expect(CONFIRM_WAIVABLE_VERBS.size).toBe(2)
+    expect(CONFIRM_WAIVABLE_VERBS.size).toBe(3)
     selectFor(WRITE_LABEL)
     selectFor(CLOSE_LABEL)
+    // `open-project` joined the table (2026-10) — and must arrive with its own sentence, not the
+    // honest-but-ugly fallback that only names the verb.
+    selectFor(OPEN_PROJECT_LABEL)
+    expect(host.textContent).not.toContain('Ask before an agent runs `open-project`')
   })
 
   it('defaults to Always ask with no setting stored', () => {
@@ -110,7 +115,7 @@ describe('destructive canvas-control confirmations in Settings', () => {
       useSettings.setState((s) => ({
         settings: {
           ...s.settings,
-          controlConfirmWaivers: { always: ['open-project', 'close', 'close'] } as never
+          controlConfirmWaivers: { always: ['settings', 'close', 'close'] } as never
         }
       }))
     })

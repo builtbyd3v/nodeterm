@@ -7,7 +7,7 @@ import { ConfirmDialog } from '../../ConfirmDialog'
 import { ProCompare } from './ProCompare'
 import { Button } from '@renderer/ui/Button'
 import { machineNoun, otherMachines, thisMachine } from '@renderer/lib/machineName'
-import { mobileStoreNames } from '@renderer/lib/links'
+import { mobileStoreNames, STRIPE_BILLING_PORTAL_URL } from '@renderer/lib/links'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import type { SettingsSectionId } from '../nav'
 import { Input } from '@renderer/ui/Input'
@@ -16,6 +16,7 @@ import {
   proStatusLine,
   canReleaseDevices,
   canUseKeyElsewhere,
+  offersBillingPortal,
   releaseFailureSentence,
   activationErrorSentence
 } from '@renderer/lib/licenseCopy'
@@ -45,7 +46,15 @@ const ROWS = {
       'iphone',
       'google play',
       'android',
-      'pairing'
+      'pairing',
+      'billing',
+      'invoice',
+      'invoices',
+      'receipt',
+      'payment',
+      'card',
+      'cancel',
+      'stripe'
     ]
   }
 }
@@ -64,6 +73,24 @@ function AppStorePairingHint(): React.JSX.Element {
       Some purchases cannot be linked by pairing; if Pro stays inactive, contact support before
       buying again.
     </p>
+  )
+}
+
+// Invoices, payment method and cancellation for a desktop (Stripe checkout) purchase live on
+// Stripe's hosted page — nodeterm keeps no billing account to show them in-app. Rendered for a
+// lapsed buyer too: a failed card is how a desktop subscription stops being Pro.
+function BillingPortalLink(): React.JSX.Element {
+  return (
+    <div className="space-y-2">
+      <Button onClick={() => window.nodeTerminal.shell.openExternal(STRIPE_BILLING_PORTAL_URL)}>
+        Billing &amp; invoices
+      </Button>
+      <p className="text-sm text-muted">
+        Bought Pro on the desktop? Sign in to Stripe with the email you used at checkout to download
+        invoices, update your card or cancel. Purchases from {mobileStoreNames()} are billed by the
+        store, not Stripe.
+      </p>
+    </div>
   )
 }
 
@@ -195,6 +222,7 @@ export function LicenseSection({
                 ) : null}
               </>
             ) : null}
+            {offersBillingPortal(detail) ? <BillingPortalLink /> : null}
             <Button onClick={() => setConfirming('deactivate')}>Deactivate on this device</Button>
           </div>
         ) : (
@@ -250,6 +278,7 @@ export function LicenseSection({
                 ) : null}
               </div>
             </details>
+            <BillingPortalLink />
           </div>
         )}
       </SearchableRow>

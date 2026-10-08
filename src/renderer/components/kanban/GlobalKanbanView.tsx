@@ -22,7 +22,8 @@ import { isHostedReadOnly } from '../../state/hostedTeams'
 import { activePermissionMode } from '../../state/permissionMode'
 import { CardModal } from './CardModal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
-import { IconAgent, IconNote, IconTerminal, IconTrash, IconExternal, IconSwitch, IconWeb } from '../icons'
+import { IconAgent, IconNote, IconTerminal, IconWeb } from '../icons'
+import { buildCardMenuItems } from './cardMenu'
 import { useBoardLog } from '../../state/boardLog'
 import { boardLogEvents } from '../../lib/boardLogDiff'
 import { markWorkspaceDirty } from '../../state/workspaceDirty'
@@ -31,7 +32,6 @@ import type { NodeIcon } from '@shared/node-icon'
 import { columnCategory } from '@shared/kanban-category'
 import { NO_STATIONS, stationsByOpener, type TeamStation } from '../../lib/teamProgress'
 import { stationNodeFromState } from '../../state/teamStations'
-import { nodeOwner } from '../../lib/nodeOwner'
 
 /**
  * Global (Omni) Kanban overview — one swimlane per open project.
@@ -68,7 +68,7 @@ interface SwimlaneProps {
   onOpenNode: (nodeId: string, projectId: string) => void
   onCreateNode: (projectId: string, choice: KanbanCreateChoice, columnId: string | null) => void
   onDeleteNode: (projectId: string, nodeId: string) => void
-  onRenameNode: (nodeId: string, title: string) => void
+  onRenameNode: (projectId: string, nodeId: string, title: string) => void
   onEditSticky: (projectId: string, nodeId: string, text: string) => void
   onBrowserNav: (projectId: string, nodeId: string, patch: { url?: string; title?: string }) => void
   onSetIcon: (projectId: string, nodeId: string, icon: NodeIcon | undefined) => void
@@ -76,25 +76,49 @@ interface SwimlaneProps {
    *  ONE app-wide fact (Canvas's `setKanbanModalNode`), and N lanes each reporting their own
    *  `null` would clobber whichever lane actually has one open. */
   modalNodeId: string | null
-  onModalChange: (projectId: string, nodeId: string | null) => void
+  onModalChange: (projectId: string, nodeId: string | null, view?: 'md') => void
+  /** This lane's open card modal should start on its ⌘M view (the card menu's row asked for it). */
+  modalView?: 'md'
   /** Team progress computed by the caller from LIVE canvas ropes — set for the active project's
    *  lane only; other lanes derive it from their persisted ropes. */
   liveTeams?: ReadonlyMap<string, readonly TeamStation[]>
   highlight?: boolean
-  /** Canvas's "Share live link…" row builder, asked for THIS lane's project (R49): creating a link
-   *  does not need the node on screen, so a card of another project can share too. */
-  liveLinkMenuItems?: (nodeId: string, projectId: string) => MenuItem[]
+  /** Canvas's node rows for a card (lib/nodeActionItems, BOARD_NODE_ACTION_IDS), asked for THIS
+   *  lane's project: a background lane gets its stored nodes, its own session source and its own
+   *  write router, so nothing acts on the canvas of another project. */
+  nodeActionItems?: (nodeId: string, projectId: string) => MenuItem[]
+  /** "Name with AI" on a card of this lane. */
+  onAiName?: (projectId: string, nodeId: string) => void
+  /** Set a card's node color (the card modal's Color button), routed by the lane's project. */
+  onSetColor?: (projectId: string, nodeId: string, color: string) => void
 }
 
 const Swimlane = memo(function Swimlane({
-  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, onModalChange, liveTeams, highlight, liveLinkMenuItems
+  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, onAiName, onSetColor
 }: SwimlaneProps) {
   const dragRef = useRef<{ kind: 'column'; id: string } | { kind: 'card'; id: string } | null>(null)
-  const setModalNodeId = useCallback((nodeId: string | null) => onModalChange(projectId, nodeId), [onModalChange, projectId])
+  const setModalNodeId = useCallback(
+    (nodeId: string | null, view?: 'md') => onModalChange(projectId, nodeId, view),
+    [onModalChange, projectId]
+  )
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [labelFilter, setLabelFilter] = useState<string[]>([])
   const [collapsed, setCollapsed] = useState(false)
   const activePortsProjectId = useProjects((s) => s.activeProjectId)
+  // The card face's Ports chip, for the active project's lane only: the dev-port scanner covers the
+  // project on the canvas and nothing else, so a background lane would show a stale or empty list.
+  const portsRemote = useProjects((s) => !!s.getProject(projectId)?.ssh)
+  const cardPorts = useMemo(
+    () => (projectId === activePortsProjectId ? { projectId, remote: portsRemote } : undefined),
+    [projectId, activePortsProjectId, portsRemote]
+  )
+  const openPort = useCallback(
+    (nodeId: string, url: string) => {
+      window.dispatchEvent(new CustomEvent('nodeterm:open-url-node', { detail: { url, sourceNodeId: nodeId } }))
+      onOpenNode(nodeId, projectId)
+    },
+    [onOpenNode, projectId]
+  )
   const customAgents = useSettings((s) => s.settings.customAgents)
   const disabledAgents = useSettings((s) => s.settings.disabledAgents)
 
@@ -225,25 +249,29 @@ const Swimlane = memo(function Swimlane({
           onTravel={travel}
           columnCategory={category}
           liveLinkSource={liveLinkSource}
+          ports={cardPorts}
+          onOpenPort={openPort}
         />
       ))
     }]
   }
 
+  // The card menu both boards share (cardMenu.tsx), asked for THIS lane's project.
   const cardMenuItems = (nodeId: string): MenuItem[] => {
-    const curColId = columnForNode(board, nodeId)?.id ?? null
-    const moveTargets: MenuItem[] = [
-      ...(curColId !== null ? [{ label: 'Ungrouped', onClick: () => commit(assignNode(board, nodeId, null, null)) }] : []),
-      ...board.columns.filter(c => c.id !== curColId).map(c => ({ label: c.title, onClick: () => commit(assignNode(board, nodeId, c.id, null)) }))
-    ]
-    return [
-      { label: 'Open card', icon: <IconExternal />, onClick: () => setModalNodeId(nodeId) },
-      { label: 'Open on canvas', icon: <IconExternal />, onClick: () => onOpenNode(nodeId, projectId) },
-      ...(moveTargets.length ? [{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets } as MenuItem] : []),
-      ...(liveLinkMenuItems?.(nodeId, projectId) ?? []),
-      { type: 'separator' },
-      { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(projectId, nodeId) }
-    ]
+    const card = byId.get(nodeId)
+    if (!card) return []
+    return buildCardMenuItems({
+      card,
+      board,
+      hidden: useSettings.getState().settings.hiddenNodeMenuItems,
+      commit,
+      openCard: setModalNodeId,
+      openOnCanvas: (id) => onOpenNode(id, projectId),
+      rename: (id, title) => onRenameNode(projectId, id, title),
+      aiName: onAiName ? (id) => onAiName(projectId, id) : undefined,
+      nodeActions: nodeActionItems ? (id) => nodeActionItems(id, projectId) : undefined,
+      remove: (id) => onDeleteNode(projectId, id)
+    })
   }
 
   const toggleCollapsed = () => {
@@ -318,12 +346,16 @@ const Swimlane = memo(function Swimlane({
           board={board}
           onChangeBoard={commit}
           onClose={() => setModalNodeId(null)}
+          initialView={modalView}
           portsProjectId={projectId === activePortsProjectId ? projectId : undefined}
           onOpenCanvas={() => { setModalNodeId(null); onOpenNode(modalNodeId, projectId) }}
-          onRename={(t) => onRenameNode(modalNodeId, t)}
+          onRename={(t) => onRenameNode(projectId, modalNodeId, t)}
           onEditSticky={(t) => onEditSticky(projectId, modalNodeId, t)}
           onBrowserNav={(patch) => onBrowserNav(projectId, modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(projectId, modalNodeId, icon)}
+          onSetColor={onSetColor ? (color) => onSetColor(projectId, modalNodeId, color) : undefined}
+          onDelete={() => onDeleteNode(projectId, modalNodeId)}
+          onAiName={onAiName ? () => onAiName(projectId, modalNodeId) : undefined}
           team={teams.get(modalNodeId) ?? NO_STATIONS}
           onTravel={(nodeId) => { setModalNodeId(null); travel(nodeId) }}
         />
@@ -347,16 +379,20 @@ export interface GlobalKanbanLive {
 
 export interface GlobalKanbanViewProps {
   live?: GlobalKanbanLive | null
-  /** Canvas's "Share live link…" row builder (the node menu's), for every lane's card menu.
+  /** Canvas's node rows for a card (`boardNodeActionItems`), asked per lane's project.
    *  Optional: an overview with no canvas behind it offers none. */
-  liveLinkMenuItems?: (nodeId: string, projectId: string) => MenuItem[]
+  nodeActionItems?: (nodeId: string, projectId: string) => MenuItem[]
+  /** Canvas's "Name with AI" for a card of any lane (`aiNameFromKanban`). Optional. */
+  onAiName?: (projectId: string, nodeId: string) => void
+  /** Canvas's color write for a card of any lane (`setCardColor`, routed per project). Optional. */
+  onSetColor?: (projectId: string, nodeId: string, color: string) => void
   /** Canvas's `setKanbanModalNode` — the same hook the per-project board reports to. It is what
    *  makes an open card "watched" (Eco must not hibernate it), wakes a hibernated agent on open,
    *  and points the dictation shortcut at the card instead of the selected canvas node. */
   onModalNodeChange?: (nodeId: string | null) => void
 }
 
-export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, liveLinkMenuItems }: GlobalKanbanViewProps) {
+export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, nodeActionItems, onAiName, onSetColor }: GlobalKanbanViewProps) {
   // Same rule as the per-project board: the canvas is covered but mounted underneath.
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
@@ -364,9 +400,9 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   const projects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
   const liveRef = useRef(live)
   liveRef.current = live
-  const [modal, setModal] = useState<{ projectId: string; nodeId: string } | null>(null)
-  const onModalChange = useCallback((projectId: string, nodeId: string | null) => {
-    setModal(nodeId ? { projectId, nodeId } : null)
+  const [modal, setModal] = useState<{ projectId: string; nodeId: string; view?: 'md' } | null>(null)
+  const onModalChange = useCallback((projectId: string, nodeId: string | null, view?: 'md') => {
+    setModal(nodeId ? { projectId, nodeId, view } : null)
   }, [])
   const modalNodeId = modal?.nodeId ?? null
   useEffect(() => { onModalNodeChange?.(modalNodeId) }, [modalNodeId, onModalNodeChange])
@@ -433,12 +469,11 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     window.dispatchEvent(new CustomEvent('nodeterm:global-delete', { detail: { projectId, nodeId } }))
   }, [])
 
-  const onRenameNode = useCallback((nodeId: string, title: string) => {
-    // The board lists open projects, and `nodeOwner` prefers an open one over a closed, handed-off
-    // SSH project holding the same node id.
-    const proj = nodeOwner(useProjects.getState().projects, nodeId)
-    if (!proj) return
-    window.dispatchEvent(new CustomEvent('nodeterm:global-rename', { detail: { projectId: proj.id, nodeId, title } }))
+  const onRenameNode = useCallback((projectId: string, nodeId: string, title: string) => {
+    // The LANE's project, like every sibling here: it is known, and looking the node up in the
+    // STORED projects instead dropped a rename of a live-lane node created since the last autosave
+    // (not in the store yet) without a word — and could pick the wrong owner for a reused node id.
+    window.dispatchEvent(new CustomEvent('nodeterm:global-rename', { detail: { projectId, nodeId, title } }))
   }, [])
 
   const onEditSticky = useCallback((projectId: string, nodeId: string, text: string) => {
@@ -505,10 +540,13 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               onBrowserNav={onBrowserNav}
               onSetIcon={onSetIcon}
               modalNodeId={modal?.projectId === p.id ? modal.nodeId : null}
+              modalView={modal?.projectId === p.id ? modal.view : undefined}
               onModalChange={onModalChange}
               liveTeams={isLive ? live.teams : undefined}
               highlight={highlightId === p.id}
-              liveLinkMenuItems={liveLinkMenuItems}
+              nodeActionItems={nodeActionItems}
+              onAiName={onAiName}
+              onSetColor={onSetColor}
             />
           )
         })}

@@ -146,16 +146,23 @@ describe('the confirm-gated set and the dispatch that reads it stay in agreement
     })
   }
 
-  it('open-project raises the SAME dialog but can never be waived', () => {
-    // It is outside CONFIRM_WAIVABLE_VERBS on purpose (it registers a new directory and records a
-    // grant), and it is already deduped per (caller, project), so it cannot produce the dialog
-    // storm the waiver exists to end. Both halves are asserted: no waiver, but still a deadline.
-    expect(isWaivableVerb('open-project')).toBe(false)
+  it('open-project raises the SAME dialog, and its waived and confirmed legs register the SAME thing', () => {
+    // It joined CONFIRM_WAIVABLE_VERBS in 2026-10: the old reason to keep it out ("already deduped
+    // per (caller, project)") did not hold, because that dedupe is per caller NODE per app run.
+    // The derived loop above already pins the decision, the notice and the waiver field; what is
+    // specific to this verb is that a waiver must change WHETHER the human is asked and nothing
+    // else — so both legs go through one `opFinish(opAdopt)`, never two hand-built registrations.
+    expect(isWaivableVerb('open-project')).toBe(true)
     const body = dispatchBody('open-project')
-    // The FIELD, not the word: the block carries a comment explaining why it has no waiver, and
-    // that comment is the thing a future reader needs most.
-    expect(body).not.toMatch(/waiveVerb:/)
-    expect(body).not.toContain('controlConfirmDecision(')
+    expect(body.split('opFinish(opAdopt)').length - 1, 'the waived leg and the confirm leg').toBe(2)
+    // The decision runs AFTER the idempotent-hit shortcut (a silent repeat needs no waiver) and
+    // BEFORE the one-dialog-at-a-time refusal (a waived call never needed a dialog slot).
+    const silent = body.indexOf("opPlan.kind === 'silent'")
+    const decide = body.indexOf('controlConfirmDecision(verb, ctlProject?.id)')
+    const busy = body.indexOf('isDestructiveVerb(verb) && confirmBusy()')
+    expect(silent).toBeGreaterThan(-1)
+    expect(decide).toBeGreaterThan(silent)
+    expect(busy).toBeGreaterThan(decide)
     expect(body).toContain('expiresAt: confirmExpiresAt(')
   })
 

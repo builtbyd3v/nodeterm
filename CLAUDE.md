@@ -4205,11 +4205,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     with 14 ids the user cannot audit the list themselves. Capped at `CLOSE_BULK_MAX` (50) and the
     dialog spells out at most 12 names then counts the rest — a name the user cannot see is not
     consent.
-  - **"Don't ask again" is bounded by SCOPE, not by permanence** (2026-09, revised). The checkbox
-    offers two reaches and defaults to the narrower: **"while nodeterm is running"** — the
+  - **"Don't ask again" is bounded by SCOPE, not by permanence** (2026-09, revised 2026-10). The
+    dialog offers three RADIOS, visible from the start (`waiveChoices`): **"ask me again next
+    time"** (pre-selected, and not a waiver — an untouched dialog grants nothing), **"don't ask
+    again for agents in <project name>"**, persisted in `settings.controlConfirmWaivers.projects` as
+    `{ [projectId]: verbs }`, or **"don't ask again in any project until nodeterm quits"** — the
     transient `state/controlConfirm.ts`, memory only (not `settings.json`, not `localStorage`), per
-    VERB, so quitting restores the gate — or **"always in <project name>"**, persisted in
-    `settings.controlConfirmWaivers.projects` as `{ [projectId]: verbs }`. The machine-WIDE
+    VERB in every project, so quitting restores the gate. It used to be a checkbox whose two reaches
+    appeared only once ticked, defaulting to the app-run one: the per-project answer was invisible
+    until the user had already said yes, and the 2026-10 report read it as missing. The labels say
+    what each reach covers because the two are different shapes — "until nodeterm quits" must not
+    sit under a project name, since the app-run waiver has no project bound. The machine-WIDE
     `always` is still reachable only from Settings → Agents, where the option says "permanently":
     a dialog that appeared under the user's hands must not switch a destructive gate off
     *everywhere* on one stray click. The per-project scope is what makes the offer honest — an
@@ -4247,11 +4253,20 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     nobody chose it, and reading an unset setting as a deliberate choice is reading consent into
     silence. The claude version gate is deliberately NOT applied here (it exists to degrade `auto`
     for an old CLI; a security decision must not hang on a `claude --version` probe).
-  - **`open-project` can never be waived**, by table (`CONFIRM_WAIVABLE_VERBS`) rather than by a
-    line somebody forgot at one of three call sites. It widens the app's blast radius (a new
-    directory registered as a project, plus a grant the caller feeds to `--project`) instead of
-    acting inside it, and it cannot produce the dialog storm the waiver exists to end —
-    `recordAttachConsent` already dedupes it per (caller, project).
+  - **`settings` can never be waived**, by table (`CONFIRM_WAIVABLE_VERBS`) rather than by a line
+    somebody forgot at a call site: a settings change can GRANT a capability, and a CLI that could
+    waive its own consent would make the consent decorative.
+  - **`open-project` IS waivable (2026-10)** — it was excluded on the claim that it "cannot produce
+    the dialog storm — `recordAttachConsent` already dedupes it per (caller, project)". That
+    dedupe is keyed on the caller's NODE id, in memory, for one app run: every new orchestrator,
+    every station a team spawns and every restart asked again about the same two projects, with no
+    box to stop it (the field report: "an orchestrator in another project opens a node, a dialog
+    each time"). Waiving it changes only whether the human is asked — main still requires a
+    verified, local caller, an absolute existing `--cwd` and the grant cap, still records the
+    grant from the reply, and the registration still never focuses a tab. Its waiver is keyed on
+    the CALLER's project like `write`/`close` (the open-project block resolves that project
+    itself, under the same `ctlProject` name, because it runs before the dispatch computes one);
+    the waived and confirmed legs register through ONE `opFinish(opAdopt)`.
   **An agent-requested dialog knows its own request's lifetime** (`ConfirmState.expiresAt` /
   `onExpire`, `CONTROL_REQUEST_TIMEOUT_MS` now shared with main). Main abandons a control request
   after 120 s and tells the renderer NOTHING, so the dialog stayed on screen asking about work
@@ -9577,7 +9592,7 @@ For every OTHER test dir, two layers, both needed:
   carries the node's actions (search / dictate / AI-name / comments), accepts file drops
   (`terminal/file-drop.ts`), renders browser webviews (`BrowserSurface`), and its cards support
   right-click actions + `+ New`. When you touch a node's UI, ask "does the board need this too?"
-  and wire it through `KanbanView`/`SessionCard`/`CardModal` in the SAME change. Kanban itself is
+  and wire it through `KanbanView`/`SessionCard`/`CardModal` in the SAME change. Node menu rows live in ONE builder, `renderer/lib/nodeActionItems.tsx` (canvas menu, sessions sidebar, both boards' card menus via `kanban/cardMenu.tsx`); a card takes only `BOARD_NODE_ACTION_IDS` and writes through `nodeWritesFor(projectId)`, because the Omni board acts on nodes of projects that are not on the canvas. Kanban itself is
   desktop+Server-Edition (pure renderer + `workspace.save`); the iOS board is a separate read/move
   mirror (`nodeterm-ios`, `KanbanGrouping`/`ProjectBoardView`).
 

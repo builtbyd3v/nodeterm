@@ -144,6 +144,19 @@ export function canReleaseDevices(detail: LicenseDetail | null): boolean {
 }
 
 /**
+ * Whether to offer the Stripe billing page (invoices, payment method, cancel) beside an active Pro.
+ *
+ * Deliberately the INVERSE of `canReleaseDevices`: hidden only for a STATED store source, shown for
+ * a null one. The release gate hides on doubt because the server can only refuse that action; this
+ * link can only open a sign-in page, and the users who need it most carry a null source — a renewal
+ * whose card failed reads back as `inactive`, and every error reply states no source. An App Store
+ * or Play subscriber has nothing on Stripe, and their sentence already says where the term lives.
+ */
+export function offersBillingPortal(detail: LicenseDetail | null): boolean {
+  return detail?.source !== 'apple' && detail?.source !== 'google'
+}
+
+/**
  * Whether to tell the user they can paste this key on another Mac.
  *
  * A key with no free device is an invitation to an activation that CANNOT succeed — the server

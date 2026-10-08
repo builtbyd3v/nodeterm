@@ -50,17 +50,32 @@ export function confirmExpiresAt(receivedAt: number): number {
  * The destructive verbs whose confirm a user MAY waive — a deliberate subset of
  * `DESTRUCTIVE_VERBS`.
  *
- * `open-project` is absent ON PURPOSE and must stay absent. It is the only one of the three that
- * widens the app's blast radius rather than acting inside it: it registers a new directory as a
- * project and records a grant the caller then feeds to `--project`. It also cannot produce the
- * dialog storm this waiver exists to end — its consent is already deduped per (caller, project)
- * by `recordAttachConsent`, so a repeat registration is silent anyway. A verb here must be one
- * whose repetition is the problem; `open-project`'s repetition is already solved.
+ * `settings` is absent ON PURPOSE and must stay absent: a settings change can GRANT a capability
+ * (`agentMessaging`, @shared/settings-verb), and a standing "don't ask again" that covered it would
+ * let an agent hand itself a power on the strength of an answer the human gave about something
+ * else. A CLI that could waive its own consent would make the consent decorative.
+ *
+ * `open-project` WAS absent, on the claim that it "cannot produce the dialog storm this waiver
+ * exists to end — its consent is already deduped per (caller, project) by `recordAttachConsent`".
+ * Read what that dedupe is keyed on: the caller's NODE id, in memory, for one app run
+ * (`lib/projectOpen.ts`). So every new orchestrator session asks again, every station a team
+ * spawns that calls `open-project` asks again, and every restart asks again, about the same two
+ * projects the user already said yes to — which is the field report (2026-10): an orchestrator in
+ * one project opening sessions in another, a dialog each time, and no box to stop it. The dedupe
+ * stays (it still silences an idempotent repeat by the same caller); it was never a reason to
+ * withhold the box.
+ *
+ * Waiving it does not widen what the verb CAN do, only whether the human is asked. Everything that
+ * bounds it is enforced before the renderer sees the request and is untouched: a verified caller,
+ * local projects only, an absolute existing `--cwd`, the per-caller grant cap, and a registration
+ * that never focuses a tab. Its waiver is keyed on the CALLER's project like `write`/`close` — the
+ * trust being expressed is "the agents in that repo", and for a create/adopt there is no target
+ * project yet to key on — and a waived registration still announces itself (`waivedNotice`).
  */
-export const CONFIRM_WAIVABLE_VERBS: ReadonlySet<string> = new Set(['write', 'close'])
+export const CONFIRM_WAIVABLE_VERBS: ReadonlySet<string> = new Set(['write', 'close', 'open-project'])
 
-/** May this verb's confirm be waived at all? Table-driven, so "open-project can never be waived"
- *  is a tested fact rather than a line somebody forgot to write at one of three call sites. */
+/** May this verb's confirm be waived at all? Table-driven, so "settings can never be waived" is a
+ *  tested fact rather than a line somebody forgot to write at one of the call sites. */
 export function isWaivableVerb(verb: string): boolean {
   return CONFIRM_WAIVABLE_VERBS.has(verb)
 }
@@ -129,6 +144,51 @@ export type PermissionModeSource = 'project' | 'global' | 'default'
  *  user needs in order to revoke the right one. */
 export type ConfirmWaiverVia = 'session' | 'project' | 'always' | 'bypass'
 
+/**
+ * What the user picked under an agent-requested confirm: no waiver (`ask`), the durable
+ * per-project one, or the app-run one.
+ */
+export type ConfirmWaiveChoice = 'ask' | 'project' | 'session'
+
+/**
+ * The "don't ask again" choices an agent-requested confirm offers, in display order — ONE
+ * definition, because each label is a promise the grant in Canvas's `onConfirm` has to keep.
+ *
+ * Shown as radios from the start, with `ask` selected. It used to be a checkbox whose reaches
+ * appeared only once it was ticked, defaulting to the app-run one — so the per-project answer
+ * ("stop asking me about the agents in this repo") was invisible until the user had already said
+ * yes to something else, which is how it read as missing (2026-10 report). Radios keep the old
+ * guarantee that an untouched dialog grants nothing: `ask` is pre-selected and is not a waiver.
+ *
+ * The labels say exactly what each reach covers, because the two are not the same shape: the
+ * project choice is keyed on the CALLER's project and survives restarts; the app-run choice is
+ * per VERB in every project (`state/controlConfirm.ts`) and dies with the process. A label that
+ * hung "until nodeterm quits" under "for agents in A" would promise a project bound the app-run
+ * waiver does not have.
+ *
+ * The project is NAMED, never "this project": canvas control answers a background agent in its
+ * own project without moving the user's tab (@shared/control-off-screen), so "this" would point at
+ * whatever canvas the user happens to be looking at. With no project to name (the call's project
+ * could not be resolved) the per-project choice is not offered at all — offering it would promise a
+ * grant `waiveControlConfirmForProject` would then refuse.
+ */
+export function waiveChoices(project?: {
+  id?: string
+  name?: string
+}): { value: ConfirmWaiveChoice; label: string }[] {
+  const out: { value: ConfirmWaiveChoice; label: string }[] = [
+    { value: 'ask', label: 'Ask me again next time' }
+  ]
+  if (project?.id) {
+    out.push({
+      value: 'project',
+      label: `Don\u2019t ask again for agents in "${project.name || 'this project'}"`
+    })
+  }
+  out.push({ value: 'session', label: 'Don\u2019t ask again in any project until nodeterm quits' })
+  return out
+}
+
 export interface ControlConfirmDecision {
   /** True = apply the verb without a dialog. */
   skip: boolean
@@ -146,7 +206,7 @@ const ASK: ControlConfirmDecision = { skip: false, via: null }
  * component.
  *
  * Order is precedence, and it is fail-closed at every step: an unwaivable verb never skips (the
- * `open-project` rule, applied before anything else is even read), a hand-edited `always` entry
+ * `settings` rule, applied before anything else is even read), a hand-edited `always` entry
  * naming an unwaivable verb is ignored rather than honoured, and the bypass lock demands both keys.
  */
 export function decideControlConfirm(input: {
@@ -181,8 +241,8 @@ export function decideControlConfirm(input: {
     return { skip: true, via: 'project' }
   }
   // No second table check here: the `isWaivableVerb(verb)` gate above already refuses a
-  // hand-edited `always: ["open-project"]` before this line is reached (proven by the
-  // open-project test's `always` case, and by mutating that gate). A duplicate check would be
+  // hand-edited `always: ["settings"]` before this line is reached (proven by the
+  // settings test's `always` case, and by mutating that gate). A duplicate check would be
   // unreachable code claiming to be a safeguard — this repo has shipped that mistake, and a
   // safeguard no test can turn red is a comment, not a mechanism.
   if (persisted?.always?.includes(verb)) return { skip: true, via: 'always' }
@@ -217,7 +277,7 @@ export function sanitizeControlConfirmWaivers(raw: unknown): ControlConfirmWaive
   const out: ControlConfirmWaivers = {}
   if (always.length) out.always = always
   // Per-project entries get the SAME treatment as `always` — the verb table decides, so a
-  // hand-edited `{"p1":["open-project"]}` is dropped rather than honoured — plus a key check the
+  // hand-edited `{"p1":["settings"]}` is dropped rather than honoured — plus a key check the
   // flat list does not need. An empty verb list is dropped with its key: an entry that waives
   // nothing is indistinguishable from no entry to every reader, and keeping it would leave a row
   // in Settings offering to revoke a waiver that does not exist.

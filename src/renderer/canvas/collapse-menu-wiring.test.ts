@@ -8,12 +8,16 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SRC = fs.readFileSync(path.join(__dirname, 'Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
+// The row itself moved into the shared node-menu builder (canvas, sidebar and both boards).
+const ROWS = fs
+  .readFileSync(path.join(__dirname, '../lib/nodeActionItems.tsx'), 'utf8')
+  .replace(/\r\n/g, '\n')
 
 describe('Collapse / Expand menu wiring', () => {
   it('gates the row on canToggleCollapse over the targets', () => {
-    const row = SRC.indexOf("label: 'Collapse / Expand'")
+    const row = ROWS.indexOf("label: 'Collapse / Expand'")
     expect(row).toBeGreaterThan(-1)
-    const gate = SRC.slice(SRC.lastIndexOf("isHidden('collapse', hidden)", row), row)
+    const gate = ROWS.slice(ROWS.lastIndexOf("isHidden('collapse', hidden)", row), row)
     expect(gate).toMatch(/!ids\.some\(\(nid\) => \{[\s\S]*canToggleCollapse\(n\)/)
   })
 

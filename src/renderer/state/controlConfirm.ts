@@ -3,8 +3,10 @@ import { create } from 'zustand'
 import { isWaivableVerb } from '@shared/control-confirm'
 
 /**
- * Canvas-control confirm waivers granted for THIS APP RUN — the "Don't ask again" checkbox in the
- * destructive-verb dialog.
+ * Canvas-control confirm waivers granted for THIS APP RUN — the "don't ask again in any project
+ * until nodeterm quits" choice in the destructive-verb dialog (@shared/control-confirm
+ * `waiveChoices`). Per VERB, in every project: there is no project in the key, which is why that
+ * choice's label says "any project".
  *
  * **In memory, and that is the feature, not a shortcut.** It is neither persisted here nor mirrored
  * into `settings.json` (`localStorage` included — a browser-origin store would outlive the process

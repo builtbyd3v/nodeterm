@@ -952,7 +952,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     `  cwd always returns the same project, never a duplicate. A \`--name\` over ${PROJECT_NAME_MAX} characters is`,
     '  cut to that length when the project is created. Creating/adding asks the user to',
     '  confirm (your first open of an already-registered project asks once too) and may be denied —',
-    '  a denial is final, do not retry it. Local only (refused from an SSH project), and it never',
+    '  a denial is final, do not retry it. The user may have turned that dialog off for agents in',
+    '  your project, in which case it simply applies. Local only (refused from an SSH project), and it never',
     '  focuses the new project\'s tab. The returned id is what `--project` accepts.',
     '  Server Edition is narrower: it can only re-open an exact local project already saved in its',
     '  workspace (pass `--cwd` only); it never creates, adds, renames, recolors, or focuses one.',
@@ -1538,7 +1539,8 @@ ${reportOutcomeDocLines().join('\n')}
   its real name). A \`--name\` over ${PROJECT_NAME_MAX} characters is cut to that length when the
   project is created. Creating/adding asks the user to confirm (your first open of an
   already-registered project asks once too) and may be denied — a denial is final, do not retry
-  it. Local only (refused from an SSH project), and it never focuses the new project's tab: use
+  it. The user may have turned that dialog off for agents in your project, in which case it simply
+  applies. Local only (refused from an SSH project), and it never focuses the new project's tab: use
   the returned id with \`--project\` to open sessions there.
   On Server Edition this is a restart-recovery operation only: pass \`--cwd\` for an exact local
   project already saved in that Server workspace. It never creates, adds, renames, recolors, or

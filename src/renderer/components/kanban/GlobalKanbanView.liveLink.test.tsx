@@ -62,12 +62,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function mount(projects: Project[], liveLinkMenuItems?: (nodeId: string, projectId: string) => MenuItem[]): void {
+function mount(
+  projects: Project[],
+  nodeActionItems?: (nodeId: string, projectId: string) => MenuItem[],
+  onAiName?: (projectId: string, nodeId: string) => void
+): void {
   useProjects.setState({ projects, activeProjectId: projects[0].id } as never)
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  act(() => root!.render(<GlobalKanbanView liveLinkMenuItems={liveLinkMenuItems} />))
+  act(() => root!.render(<GlobalKanbanView nodeActionItems={nodeActionItems} onAiName={onAiName} />))
 }
 const cardIn = (lane: string): HTMLElement =>
   document.querySelector<HTMLElement>(`#swimlane-${lane} [title="Open card"]`)!
@@ -92,6 +96,17 @@ describe('Omni board — live links', () => {
     })
     expect(document.body.textContent).toContain('Open card')
     expect(document.body.textContent).not.toContain('Share live link')
+  })
+
+  it('"Name with AI" on a background lane names the node of that lane', () => {
+    const ai = vi.fn()
+    mount([project('a', [terminal('n-a', 'alpha')]), project('b', [terminal('n-b', 'beta')])], undefined, ai)
+    act(() => {
+      cardIn('b').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }))
+    })
+    const row = [...document.querySelectorAll<HTMLElement>('.ctx-item')].find((el) => el.textContent?.includes('Name with AI'))
+    act(() => row!.click())
+    expect(ai).toHaveBeenCalledWith('b', 'n-b')
   })
 
   it('R57: the local lane shows the chip; a relay lane with the SAME node id does not', () => {

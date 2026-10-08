@@ -287,6 +287,11 @@ const CONTROL_CONFIRM_VERB_COPY: Record<string, { label: string; description: st
     label: 'Ask before an agent closes nodes',
     description:
       'The `close` verb deletes nodes and ends their terminal sessions. Waiving the dialog lets any canvas-control agent do that without asking.'
+  },
+  'open-project': {
+    label: 'Ask before an agent opens or adds a project',
+    description:
+      'The `open-project` verb lets an agent open sessions in another project you already have, or add a folder as a new project, so it can start work there. Waiving the dialog lets any canvas-control agent do that without asking.'
   }
 }
 
@@ -646,7 +651,7 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
                   always
                     ? undefined
                     : sessionWaived
-                      ? 'Waived until nodeterm quits (you ticked "Don\u2019t ask again"). Revoke restores the dialog now.'
+                      ? 'Waived until nodeterm quits, in every project (you chose that in an agent\u2019s dialog). Revoke restores the dialog now.'
                       : inProjects.length
                         ? `Waived permanently in ${inProjects.map((r) => `"${r.name}"`).join(', ')} \u2014 revoke below.`
                         : undefined
@@ -684,7 +689,7 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               // per-project waiver is granted from a DIALOG, which is gone the moment it is
               // answered — so without this row the grant would be permanent, invisible, and
               // findable only by hand-editing settings.json.
-              description="You ticked \u201cDon\u2019t ask again\u201d and chose one project. These survive restarts, and apply only inside the project named. A project you delete takes its waivers with it."
+              description="You chose \u201cDon\u2019t ask again for agents in \u2026\u201d in an agent\u2019s dialog. These survive restarts, and apply only to agents running in the project named. A project you delete takes its waivers with it."
               control={
                 <div className="flex flex-col items-end gap-2">
                   {projectWaiverRows.map((row) =>

@@ -36,7 +36,8 @@ import { GitHubPullCard } from './GitHubPullCard'
 import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
 import type { ModalSpawn } from './ModalTerminal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
-import { IconAgent, IconBranch, IconExternal, IconNote, IconSwitch, IconTerminal, IconTrash, IconWeb } from '../icons'
+import { buildCardMenuItems } from './cardMenu'
+import { IconAgent, IconBranch, IconExternal, IconNote, IconTerminal, IconWeb } from '../icons'
 import { issueWorktreeMenuRow, type IssueWorktreeMenuAnswer } from '../../lib/issueWorktree'
 import type { GitHubCloseReason, GitHubIssueCardView } from '@shared/github-issues'
 import { issueKey, issueRefFromHtmlUrl, issueUrl, type IssueRef } from '@shared/github-issue-ref'
@@ -131,18 +132,16 @@ export interface KanbanViewProps {
   /** Set (or clear, with `undefined`) a node's icon — the card modal's icon button. */
   onSetIcon: (nodeId: string, icon: NodeIcon | undefined) => void
   /**
-   * The node's "Switch Claude/Codex account ▸" rows — the SAME builder the canvas node menu uses
-   * (`accountSwitchRows` in Canvas), so a card offers exactly what its node does. Optional: a board
-   * with no canvas behind it (a test, a future read-only view) simply shows no rows.
+   * The node's own rows for its card menu — the SAME builder the canvas node menu and the sessions
+   * sidebar use (lib/nodeActionItems), narrowed by Canvas to `BOARD_NODE_ACTION_IDS`: stop agent
+   * control, color, icon, Share live link…, Switch Claude/Codex account. Optional: a board with no
+   * canvas behind it (a test, a future read-only view) shows none.
    */
-  accountMenuItems?: (nodeId: string) => MenuItem[]
-  /**
-   * The node's "Share live link…" row — the SAME builder the canvas node menu and the sessions
-   * sidebar use (`liveLinkMenuItems` in Canvas), so a card offers what its node does, disabled with
-   * the same reason. Optional for the same reason as `accountMenuItems`: a board with no canvas
-   * behind it offers none.
-   */
-  liveLinkMenuItems?: (nodeId: string) => MenuItem[]
+  nodeActionItems?: (nodeId: string) => MenuItem[]
+  /** "Name with AI" on a card (Canvas `aiNameSession`, the sessions sidebar's funnel). Optional. */
+  onAiName?: (nodeId: string) => void
+  /** Set a card's node color — the card modal's Color button. Optional: no button without it. */
+  onSetColor?: (nodeId: string, color: string) => void
   /** The board moving a session card itself because its linked pull requests merged (Canvas owns
    *  the compare-and-set + board-log line). Optional: without it nothing ever auto-moves. */
   onAutoMoveFromPulls?: (
@@ -151,7 +150,7 @@ export interface KanbanViewProps {
   /**
    * "Start with agent ▸" rows for a GitHub issue card — the canvas's own agent + account picker
    * (`agentCreationEntries`), pointed at starting a bound session on that issue. Optional for the
-   * same reason as `accountMenuItems`: a board with no canvas behind it offers none.
+   * same reason as `nodeActionItems`: a board with no canvas behind it offers none.
    */
   issueAgentMenu?: (issue: GitHubIssueCardView) => MenuItem[]
   /**
@@ -242,14 +241,24 @@ function useCanvasCovered(): void {
 
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav, onSetIcon, accountMenuItems, onAutoMoveFromPulls, issueAgentMenu,
-  issueWorktreeMenu, teams, onIssueMoved, liveLinkMenuItems
+  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, onAiName, onSetColor, onAutoMoveFromPulls, issueAgentMenu,
+  issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
   const dragRef = useRef<Drag>(null)
   // One card modal at a time; a deleted node closes it via the byId.has render guard.
   const [modalNodeId, setModalNodeId] = useState<string | null>(null)
+  // The card the menu's "Open card in chat / markdown view" opened. Paired with the open card so
+  // stepping to another card (J/K) or closing the modal never carries the view along.
+  const [mdOpenFor, setMdOpenFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (mdOpenFor !== null && modalNodeId !== mdOpenFor) setMdOpenFor(null)
+  }, [modalNodeId, mdOpenFor])
+  const openCard = useCallback((nodeId: string, view?: 'md') => {
+    setMdOpenFor(view === 'md' ? nodeId : null)
+    setModalNodeId(nodeId)
+  }, [])
   // Right-click card menu (open on canvas / move / delete).
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   // Board label filter — transient (per board session; resets when you leave the board). Empty =
@@ -288,6 +297,19 @@ export const KanbanView = memo(function KanbanView({
   // Which machine this board's nodes run on — only a local board shows this machine's LIVE chips
   // (R57). A primitive, so the memoized cards are not re-rendered by it.
   const liveLinkSource = projectSessionSource(projectId)
+  // The card face's Ports chip: this board is always the project on the canvas, which is the one
+  // the dev-port scanner covers. Stable identities, because SessionCard is memoized.
+  const portsRemote = useProjects((s) => !!s.getProject(projectId)?.ssh)
+  const cardPorts = useMemo(() => ({ projectId, remote: portsRemote }), [projectId, portsRemote])
+  const openPort = useCallback(
+    (nodeId: string, url: string) => {
+      // Same hand-over as the card modal's chip: the browser node is placed beside the node ON THE
+      // CANVAS, so the board hands over to the canvas to show it.
+      window.dispatchEvent(new CustomEvent('nodeterm:open-url-node', { detail: { url, sourceNodeId: nodeId } }))
+      onOpenNode(nodeId)
+    },
+    [onOpenNode]
+  )
   // Per-user display: whether `closed` columns are on screen (localStorage, never the board).
   const showClosed = useKanbanDisplay((s) => s.byProject[projectId]?.showClosed === true)
   const setShowClosed = useKanbanDisplay((s) => s.setShowClosed)
@@ -923,6 +945,8 @@ export const KanbanView = memo(function KanbanView({
             onTravel={onOpenNode}
             columnCategory={category}
             liveLinkSource={liveLinkSource}
+            ports={cardPorts}
+            onOpenPort={openPort}
           />
         ))
       })
@@ -994,31 +1018,22 @@ export const KanbanView = memo(function KanbanView({
     return lanes
   }
 
-  // Right-click menu for a card: open on canvas, move to another column, delete.
+  // Right-click menu for a card — the one list both boards share (cardMenu.tsx).
   const cardMenuItems = (nodeId: string): MenuItem[] => {
-    const curColId = columnForNode(board, nodeId)?.id ?? null
-    const moveTargets: MenuItem[] = [
-      ...(curColId !== null
-        ? [{ label: 'Ungrouped', onClick: () => commit(assignNode(board, nodeId, null, null)) }]
-        : []),
-      ...board.columns
-        .filter((c) => c.id !== curColId)
-        .map((c) => ({
-          label: c.title,
-          onClick: () => commit(assignNode(board, nodeId, c.id, null))
-        }))
-    ]
-    return [
-      { label: 'Open card', icon: <IconExternal />, onClick: () => setModalNodeId(nodeId) },
-      { label: 'Open on canvas', icon: <IconExternal />, onClick: () => onOpenNode(nodeId) },
-      ...(moveTargets.length
-        ? ([{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets }] as MenuItem[])
-        : []),
-      ...(accountMenuItems?.(nodeId) ?? []),
-      ...(liveLinkMenuItems?.(nodeId) ?? []),
-      { type: 'separator' },
-      { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(nodeId) }
-    ]
+    const card = byId.get(nodeId)
+    if (!card) return []
+    return buildCardMenuItems({
+      card,
+      board,
+      hidden: useSettings.getState().settings.hiddenNodeMenuItems,
+      commit,
+      openCard,
+      openOnCanvas: onOpenNode,
+      rename: onRenameNode,
+      aiName: onAiName,
+      nodeActions: nodeActionItems,
+      remove: onDeleteNode
+    })
   }
 
   return (
@@ -1261,6 +1276,7 @@ export const KanbanView = memo(function KanbanView({
           board={board}
           onChangeBoard={commit}
           onClose={() => setModalNodeId(null)}
+          initialView={mdOpenFor === modalNodeId ? 'md' : undefined}
           portsProjectId={projectId}
           onOpenCanvas={() => {
             setModalNodeId(null)
@@ -1270,6 +1286,9 @@ export const KanbanView = memo(function KanbanView({
           onEditSticky={(t) => onEditSticky(modalNodeId, t)}
           onBrowserNav={(patch) => onBrowserNav(modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(modalNodeId, icon)}
+          onSetColor={onSetColor ? (color) => onSetColor(modalNodeId, color) : undefined}
+          onDelete={() => onDeleteNode(modalNodeId)}
+          onAiName={onAiName ? () => onAiName(modalNodeId) : undefined}
           onOpenIssue={(ref) => {
             // The issue summary is its own modal: close the card, then ask for the issue (the same
             // request the session card's `#N` makes — summary if the lane has it, else GitHub).

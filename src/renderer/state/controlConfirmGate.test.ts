@@ -117,10 +117,10 @@ describe('waiveControlConfirmForProject — the durable grant the dialog may mak
   })
 
   it('refuses a verb the shared table does not admit, and a missing project', () => {
-    // The table decides here as well as in the decision: a caller cannot grant `open-project` by
+    // The table decides here as well as in the decision: a caller cannot grant `settings` by
     // passing the wrong string into the wrong function. Returning false matters — the dialog falls
-    // back to the app-run waiver on a false, so a silent no-op would lose the user's tick.
-    expect(waiveControlConfirmForProject('open-project', 'other')).toBe(false)
+    // back to the app-run waiver on a false, so a silent no-op would lose the user's choice.
+    expect(waiveControlConfirmForProject('settings', 'other')).toBe(false)
     expect(waiveControlConfirmForProject('close', undefined)).toBe(false)
     expect(useSettings.getState().settings.controlConfirmWaivers).toBeUndefined()
   })

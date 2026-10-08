@@ -22,8 +22,8 @@ describe('the app-run waiver store', () => {
 
   it('refuses a verb the shared table does not admit', () => {
     // The gate is applied here as well as in the decision: a caller cannot grant a waiver for
-    // `open-project` by passing the wrong string into the wrong function.
-    useControlConfirm.getState().waiveForSession('open-project')
+    // `settings` by passing the wrong string into the wrong function.
+    useControlConfirm.getState().waiveForSession('settings')
     useControlConfirm.getState().waiveForSession('list')
     expect(useControlConfirm.getState().sessionWaived).toEqual([])
   })

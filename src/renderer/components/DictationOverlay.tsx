@@ -204,16 +204,33 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
         setError(err instanceof Error ? err.message : 'Could not request microphone access.')
         return
       }
+      // Closed during the consent round trip — never open the mic for an overlay that is gone.
+      if (!mountedRef.current || discardedRef.current) return
     }
 
+    // Owned BEFORE the mic finishes opening, so the unmount cleanup can cancel a start that is
+    // still in flight (PcmCapture then releases the stream the moment it arrives). Opening takes
+    // hundreds of ms (seconds with a Bluetooth headset), and hold-to-talk closes inside that
+    // window on every quick tap, ⌘⌥<key> shortcut and window blur. Adopting the capture only
+    // after `start()` resolved left exactly those takes with no owner: the mic recorded the room
+    // until the 2:30 cap, and the transcript — whisper's "Thank you." over silence, or a
+    // meeting's audio — was typed into the terminal.
     const capture = new PcmCapture()
+    captureRef.current = capture
+    let live: boolean
     try {
-      await capture.start()
+      live = await capture.start()
     } catch (err) {
+      if (captureRef.current !== capture) return
+      captureRef.current = null
       setError(err instanceof Error ? err.message : 'Could not start recording.')
       return
     }
-    captureRef.current = capture
+    // Cancelled while opening (start() already released the stream), or superseded/unmounted.
+    if (!live || captureRef.current !== capture || !mountedRef.current) {
+      capture.cancel()
+      return
+    }
 
     startedAtRef.current = Date.now()
     setElapsedMs(0)

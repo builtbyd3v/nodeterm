@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { CONFIRM_WAIVABLE_VERBS } from '@shared/control-confirm'
 
 /**
- * STRUCTURAL pins for the canvas-control confirm's "Don't ask again" SCOPE — the checkbox that now
- * offers "while nodeterm is running" or "always in this project".
+ * STRUCTURAL pins for the canvas-control confirm's "Don't ask again" SCOPE — three radios, visible
+ * from the start: ask next time (selected, not a waiver), never again for the agents in the
+ * caller's project, or never again in any project until nodeterm quits (@shared/control-confirm
+ * `waiveChoices`, whose labels are tested there).
  *
  * Source-level for the usual reason: the dialog is built inline in a 14,000-line component's render
  * and the grant happens in its `onConfirm`, neither of which has a unit seam. The BEHAVIOUR of both
@@ -33,31 +36,40 @@ function dialogBody(): string {
 }
 
 describe('the "Don’t ask again" scope (source pins)', () => {
-  it('defaults to the app-run waiver — the pre-existing, bounded behaviour', () => {
-    // A dialog that appeared under the user's hands must not pre-select the durable grant. Ticking
-    // and clicking through has to buy exactly what it always bought.
+  /** One per waivable verb: write, close and open-project each raise this dialog. Derived from the
+   *  table so a verb that joins it must bring every pin below with it. */
+  const RAISERS = CONFIRM_WAIVABLE_VERBS.size
+
+  it('defaults to "ask" — an untouched dialog grants nothing', () => {
+    // A dialog that appeared under the user's hands must not pre-select any waiver. The per-project
+    // choice is now VISIBLE from the start (it used to hide behind a checkbox, which read as
+    // missing), so this default is the whole of the old guarantee.
     expect(src).toContain(
-      "const [controlWaiveScope, setControlWaiveScope] = useState<'session' | 'project'>('session')"
+      "const [controlWaiveChoice, setControlWaiveChoice] = useState<ConfirmWaiveChoice>('ask')"
     )
   })
 
-  it('resets BOTH the tick and the scope every time the dispatch raises one', () => {
-    // A scope carried over from the previous dialog would grant a durable, project-scoped waiver
-    // to a user who only meant to tick the box this time. Both destructive cases must reset both.
-    const resets = [...src.matchAll(/setControlWaive\(false\)\n\s*setControlWaiveScope\('session'\)/g)]
-    expect(resets.length, 'write and close both reset both').toBe(2)
-    // …and no case resets only one of the two.
-    const lone = [...src.matchAll(/setControlWaive\(false\)(?!\n\s*setControlWaiveScope)/g)]
-    expect(lone.length, 'every setControlWaive(false) is followed by a scope reset').toBe(0)
+  it('resets the choice every time the dispatch raises one', () => {
+    // A choice carried over from the previous dialog would grant a durable, project-scoped waiver
+    // to a user who never picked it this time. Every raiser resets it immediately before raising.
+    const resets = [...src.matchAll(/setControlWaiveChoice\('ask'\)\n\s*setConfirm\(\{/g)]
+    expect(resets.length, 'every waivable verb resets before raising').toBe(RAISERS)
+    // …and nothing else sets a non-default choice: only the dialog's own radios may.
+    const sets = [...src.matchAll(/setControlWaiveChoice\(/g)]
+    expect(sets.length, 'the resets plus the one radio onChange').toBe(RAISERS + 1)
   })
 
-  it('offers the project by NAME, not as "this project"', () => {
+  it('offers the choices from the shared, tested list, with the project by NAME', () => {
     // Canvas control answers a background agent in its OWN project without moving the user's tab,
     // so "this project" would name whatever they happen to be looking at while the waiver landed
-    // somewhere else. The fallback wording is only for a call whose project could not be resolved.
+    // somewhere else. `waiveChoices` names it (and drops the choice when there is none).
     const body = dialogBody()
-    expect(body).toContain('confirm.waiveProjectName')
-    expect(body).toMatch(/Always in "\$\{confirm\.waiveProjectName\}"/)
+    expect(body).toContain('waiveChoices({')
+    expect(body).toContain('id: confirm.waiveProjectId')
+    expect(body).toContain('name: confirm.waiveProjectName')
+    // Radios from the start (`choice`), not a checkbox whose reaches appear only once ticked.
+    expect(src).toMatch(/choice=\{\s*confirm\.waiveVerb/)
+    expect(src).not.toMatch(/option=\{\s*confirm\.waiveVerb/)
   })
 
   it('grants on CONFIRM only — a denial must never widen anything', () => {
@@ -67,6 +79,8 @@ describe('the "Don’t ask again" scope (source pins)', () => {
     const onCancel = src.slice(end, src.indexOf('/>', end))
     expect(onConfirm).toContain('waiveControlConfirmForProject(confirm.waiveVerb, confirm.waiveProjectId)')
     expect(onConfirm).toContain('waiveForSession(confirm.waiveVerb)')
+    // "ask" is not a waiver: the grant is gated on a choice other than it.
+    expect(onConfirm).toContain("controlWaiveChoice !== 'ask'")
     // Nothing that grants anything may appear on the cancel path.
     expect(onCancel).not.toContain('waiveControlConfirmForProject')
     expect(onCancel).not.toContain('waiveForSession')
@@ -82,14 +96,14 @@ describe('the "Don’t ask again" scope (source pins)', () => {
     )
     expect(onConfirm).not.toContain('activeProjectId')
     for (const field of ['waiveProjectId: ctlProject?.id', 'waiveProjectName: ctlProject?.name']) {
-      expect(countOf(src, field), field).toBe(2)
+      expect(countOf(src, field), field).toBe(RAISERS)
     }
   })
 
   it('a failed durable grant falls back to the app-run waiver, never to nothing', () => {
-    // `waiveControlConfirmForProject` returns false when no project owns the call. Losing the tick
-    // there would silently give the user nothing for a box they ticked — and they would find out
-    // by being asked again on the very next call.
+    // `waiveControlConfirmForProject` returns false when no project owns the call. Losing the
+    // choice there would silently give the user nothing — and they would find out by being asked
+    // again on the very next call.
     const onConfirm = src.slice(
       src.indexOf('onConfirm={() => {', src.indexOf('confirm.waiveVerb\n              ? {')),
       src.indexOf('onCancel={() => {', src.indexOf('confirm.waiveVerb\n              ? {'))
@@ -97,20 +111,24 @@ describe('the "Don’t ask again" scope (source pins)', () => {
     expect(onConfirm).toMatch(/if \(!scoped\) useControlConfirm\.getState\(\)\.waiveForSession/)
   })
 
-  it('the gate is asked about the CALLER’s project, in both destructive cases', () => {
+  it('the gate is asked about the CALLER’s project, in every waivable case', () => {
     // The per-project waiver AND the permission mode the bypass lock reads both belong to the
-    // project the call acts on. Off canvas that is not the active one.
-    expect(countOf(src, 'controlConfirmDecision(verb, ctlProject?.id)')).toBe(2)
+    // project the call acts on. Off canvas that is not the active one — and `open-project` runs
+    // before the dispatch's own `ctlProject`, so it resolves the caller's project itself under the
+    // same name.
+    expect(countOf(src, 'controlConfirmDecision(verb, ctlProject?.id)')).toBe(RAISERS)
     expect(src).not.toMatch(/controlConfirmDecision\(verb\)/)
   })
 
-  it('the waived NOTICE names the project, in both cases', () => {
+  it('the waived NOTICE names the project, in every case', () => {
     // Losing the dialog must not mean losing the record, and "which waiver let this through" is
     // the part of the record that lets a user revoke the right one.
-    expect(countOf(src, 'waivedNotice(')).toBe(2)
-    expect(
-      countOf(src, 'ctlProject?.name\n                )'),
-      'both notices pass the project name'
-    ).toBe(2)
+    const calls = src.split('waivedNotice(').slice(1)
+    expect(calls.length).toBe(RAISERS)
+    for (const call of calls) {
+      // The project name is the call's LAST argument — read the call up to its own closing paren.
+      const head = call.slice(0, 400)
+      expect(head, 'every notice passes the project name').toMatch(/ctlProject\?\.name\s*\)/)
+    }
   })
 })

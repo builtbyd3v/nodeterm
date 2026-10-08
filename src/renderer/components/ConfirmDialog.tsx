@@ -16,24 +16,16 @@ interface ConfirmDialogProps {
    *  "Cancel / Delete" reads as though dismissing it will delete something. */
   alert?: boolean
   /** An explicit opt-in shown above the buttons (e.g. "Delete the worktree directory from disk
-   *  too"). The caller owns the value, so it can also swap the confirm label / danger styling.
-   *
-   *  `scopes` turns it into an opt-in plus a HOW FAR, rendered as radios that appear only once the
-   *  box is ticked — the canvas-control "Don't ask again" needs to offer "this app run" or "always
-   *  in this project" without asking the user to make that choice before they have said yes to the
-   *  first one. Radios, not a second checkbox: the scopes are alternatives, and two checkboxes
-   *  would let a user tick neither while the box above says they chose something. */
+   *  too"). The caller owns the value, so it can also swap the confirm label / danger styling. */
   option?: {
     label: string
     checked: boolean
     onChange: (checked: boolean) => void
-    scopes?: { value: string; label: string }[]
-    scope?: string
-    onScopeChange?: (scope: string) => void
   }
   /** A required pick among alternatives, shown from the start with `value` selected (e.g. the reason
-   *  a GitHub issue is closed). Unlike `option`, there is no "off": the caller always gets a value,
-   *  so it owns a sensible default. */
+   *  a GitHub issue is closed, or the canvas-control "don't ask again" reach). Unlike `option`,
+   *  there is no "off": the caller always gets a value, so it owns a sensible default — which, for
+   *  a waiver, is the choice that grants nothing. */
   choice?: {
     label: string
     options: { value: string; label: string }[]
@@ -154,34 +146,14 @@ export function ConfirmDialog({
           </div>
         )}
         {option && (
-          <>
-            <label className="confirm__option">
-              <input
-                type="checkbox"
-                checked={option.checked}
-                onChange={(e) => option.onChange(e.target.checked)}
-              />
-              {option.label}
-            </label>
-            {/* Only once they have said yes: an untouched dialog must read as "no waiver", and a
-                scope sitting there pre-selected reads as a decision the user has already made. */}
-            {option.checked && option.scopes?.length ? (
-              <div className="confirm__scopes" role="radiogroup" aria-label={option.label}>
-                {option.scopes.map((s) => (
-                  <label key={s.value} className="confirm__scope">
-                    <input
-                      type="radio"
-                      name={`${id}-option-scope`}
-                      value={s.value}
-                      checked={option.scope === s.value}
-                      onChange={() => option.onScopeChange?.(s.value)}
-                    />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-            ) : null}
-          </>
+          <label className="confirm__option">
+            <input
+              type="checkbox"
+              checked={option.checked}
+              onChange={(e) => option.onChange(e.target.checked)}
+            />
+            {option.label}
+          </label>
         )}
         <div className="confirm__actions">
           {/* The DESTRUCTIVE button never takes focus: autoFocus on it is what turned a stray Enter

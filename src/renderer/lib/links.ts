@@ -55,3 +55,10 @@ export function mobileStoreNames(androidPublished: boolean = ANDROID_APP_PUBLISH
     .map((l) => l.prose)
     .join(' or ')
 }
+
+/**
+ * Stripe's hosted billing page for desktop (Stripe checkout) Pro buyers: the buyer signs in with
+ * their checkout email and gets their invoices, payment method and cancellation. App Store / Play
+ * purchases are billed by the store and have nothing here.
+ */
+export const STRIPE_BILLING_PORTAL_URL = 'https://billing.stripe.com/p/login/9B65kFeraflH9ora4A7EQ00'

@@ -6,6 +6,7 @@ import {
   licenseSentence,
   canReleaseDevices,
   canUseKeyElsewhere,
+  offersBillingPortal,
   isReleaseRefusal,
   releaseFailureSentence,
   activationErrorSentence
@@ -198,6 +199,24 @@ describe('licenseSentence — a release that was REFUSED', () => {
 describe('licenseSentence — before the first read', () => {
   it('says nothing', () => {
     expect(licenseSentence(null)).toBe('')
+  })
+})
+
+describe('offersBillingPortal', () => {
+  it('offers the billing page for a stated keygen (Stripe) source', () => {
+    expect(offersBillingPortal(keygen())).toBe(true)
+  })
+
+  it('hides it only for a STATED store source — the store bills those, not Stripe', () => {
+    expect(offersBillingPortal({ key: null, used: 0, seats: 0, source: 'apple', error: null })).toBe(false)
+    expect(offersBillingPortal({ key: null, used: 0, seats: 0, source: 'google', error: null })).toBe(false)
+  })
+
+  it('offers it when no source was stated — the inverse of the release gate', () => {
+    // A renewal whose card failed reads back `inactive` with no source, and that buyer is the one
+    // who most needs the page. An `=== 'keygen'` gate (the release rule) would hide it from them.
+    expect(offersBillingPortal({ key: null, used: 0, seats: 0, source: null, error: 'inactive' })).toBe(true)
+    expect(offersBillingPortal(null)).toBe(true)
   })
 })
 

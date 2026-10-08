@@ -5,14 +5,17 @@ import {
   IconBroadcast,
   IconChat,
   IconClose,
+  IconColor,
   IconExternal,
   IconMarkdown,
   IconMaximize,
   IconMic,
   IconRestoreSize,
   IconSearch,
-  IconSmiley
+  IconSmiley,
+  IconTrash
 } from '../icons'
+import { ContextMenu } from '../ContextMenu'
 import { NodeIconView } from '../NodeIcon'
 import { nodeIconDialog } from '../NodeIconPicker'
 import { applyIconChoice } from '../../lib/nodeIconChoice'
@@ -32,6 +35,7 @@ import type { TeamStation } from '../../lib/teamProgress'
 import { sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import type { IssueRef } from '@shared/github-issue-ref'
 import { useAgentStatus } from '../../state/agentStatus'
+import { useSessionNaming } from '../../state/sessionNaming'
 import { useCardPanel } from '../../state/cardPanel'
 import {
   useCardModalSize,
@@ -116,15 +120,27 @@ interface CardModalProps {
   mentionables?: readonly MentionCandidate[]
   /** The stations this session opened (lib/teamProgress) — the same ring the card shows. */
   team?: readonly TeamStation[]
+  /** Open on the ⌘M view (the card menu's "Open card in chat / markdown view"). Terminal cards
+   *  only; read per card, like the view itself. */
+  initialView?: 'md'
   /** A station was picked from the ring's list: close the modal and go to that node. */
   onTravel?: (nodeId: string) => void
+  /** The node's color — the canvas node menu's Colors, as a header action. Absent = no button. */
+  onSetColor?: (color: string) => void
+  /** Delete the node through the board's own confirm-first Delete. The modal closes FIRST, so the
+   *  confirm is never drawn over a live view of the session it is about to end. Absent = no button. */
+  onDelete?: () => void
+  /** "Name with AI" through the board's funnel (Canvas `aiNameSession`) — the one the card menu's
+   *  row uses, so the header ✦ and the menu row cannot disagree: it reports a failure, asks the
+   *  card's OWN core, and drives the shared per-node naming spinner. */
+  onAiName?: () => void
 }
 
 /** Trello-style card popup over the board. Scrim click / Esc close it; the board (and the
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
-export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel }: CardModalProps) {
+export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName }: CardModalProps) {
   const { api } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
@@ -166,6 +182,13 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   const portsRemote = useProjects((s) => !!(portsProjectId && s.getProject(portsProjectId)?.ssh))
   const accountChip = useAccountChip(session.spawn.accountId, observedAccount)
   const [naming, setNaming] = useState(false)
+  // The board funnel's progress for this node (`onAiName`), shared with the card menu's row.
+  const funnelNaming = useSessionNaming((st) => !!st.byId[session.id])
+  // The header Color button's swatch menu, anchored under the button. Keyed by node id like the ⌘M
+  // view below: the modal is not remounted per card, and swatches left open across a J/K step
+  // would recolor the card the modal moved TO, not the one the menu was opened for.
+  const [colorMenu, setColorMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const colorMenuOpen = colorMenu !== null && colorMenu.id === session.id
   // Comments & activity panel: OPEN by default in the modal; the header 💬 collapses it. The
   // choice is remembered (localStorage) — once collapsed, later cards open collapsed too.
   const panelOpen = useCardPanel((s) => s.open)
@@ -177,14 +200,17 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   // MODAL-LOCAL on purpose, never `data.mdMode`: flipping the node's flag would also flip the
   // canvas node under the board. Keyed by node id (this component is not remounted per card, so
   // a bare boolean would carry the open view onto the next card the user opens).
-  const [mdFor, setMdFor] = useState<string | null>(null)
+  // Seeded from `initialView` so a card opened on the ⌘M view does not paint (and start a viewer
+  // for) the live terminal for a frame before the effect below swaps it.
+  const [mdFor, setMdFor] = useState<string | null>(initialView === 'md' ? session.id : null)
   const mdOpen = isTerminal && mdFor === session.id
   // Per OPENING, not sticky per card: showing another card resets it, so A → B → A comes back to
   // A's live terminal. (The id key above is what keeps the render between the switch and this
   // reset from flashing the view onto the new card.)
+  // `initialView` opens this card on the ⌘M view instead (the card menu's row asked for it).
   useEffect(() => {
-    setMdFor(null)
-  }, [session.id])
+    setMdFor(initialView === 'md' ? session.id : null)
+  }, [session.id, initialView])
   const toggleMd = useCallback(() => {
     setMdFor((cur) => (cur === session.id ? null : session.id))
     setSearchOpen(false) // the FindBar searches the xterm the view now covers
@@ -289,11 +315,33 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   const RESIZE_DIRS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 
   const nameWithAi = async () => {
+    if (onAiName) {
+      onAiName()
+      return
+    }
+    // No board funnel: the modal names the session itself — and still reports a failure, and never
+    // leaves the spinner on when the request rejects.
+    const failed = (reason: string): void => {
+      const why = reason.trim()
+      const message = why ? `Couldn't name this session with AI: ${why}` : "Couldn't name this session with AI"
+      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+    }
     setNaming(true)
-    const r = await api.pty.generateName(session.id, session.spawn.cwd ?? '', session.spawn.accountId)
-    setNaming(false)
-    if (r.ok) onRename(r.message)
+    try {
+      const r = await api.pty.generateName(session.id, session.spawn.cwd ?? '', session.spawn.accountId)
+      if (r.ok) onRename(r.message)
+      else failed(r.message)
+    } catch (e) {
+      failed(e instanceof Error ? e.message : String(e))
+    } finally {
+      setNaming(false)
+    }
   }
+  // Mirror for the capture-phase Escape listener below (it closes over stale state otherwise).
+  const colorMenuOpenRef = useRef(false)
+  useEffect(() => {
+    colorMenuOpenRef.current = colorMenuOpen
+  }, [colorMenuOpen])
   // Ref mirrors: the capture-phase listener below closes over stale state otherwise.
   const editingTitleRef = useRef(false)
   useEffect(() => {
@@ -316,6 +364,14 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
       // modal (raised), the drawer is not a dialog, so this modal is still the top one. Not consumed —
       // the drawer's own rule decides (unpinned: close the drawer; pinned: nothing).
       if (inLiveChatDrawer(e.target) || inLiveChatDrawer(document.activeElement)) return
+      // The header Color swatches own Esc first: close the menu, not the whole modal. (The menu is
+      // not a dialog-stack entry, so this modal still reads as the top dialog while it is open.)
+      if (colorMenuOpenRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        setColorMenu(null)
+        return
+      }
       // A rename in progress owns Esc first (cancel the edit, not the modal).
       if (editingTitleRef.current) {
         e.preventDefault()
@@ -544,10 +600,10 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
               <button
                 className="kanban-modal__action"
                 title="Name with AI (from terminal output)"
-                disabled={naming}
+                disabled={naming || funnelNaming}
                 onClick={nameWithAi}
               >
-                {naming ? '…' : '✦'}
+                {naming || funnelNaming ? '…' : '✦'}
               </button>
               {/* Share a live link to this terminal — the canvas node menu's row, as a header action.
                   The canvas opens the dialog (`nodeterm:live-link`) after re-checking availability
@@ -571,6 +627,19 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
               </button>
             </>
           )}
+          {onSetColor && (
+            <button
+              className="kanban-modal__action"
+              title="Color"
+              aria-label="Color"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                setColorMenu({ x: r.left, y: r.bottom, id: session.id })
+              }}
+            >
+              <IconColor />
+            </button>
+          )}
           <button
             className="kanban-modal__action"
             title={panelOpen ? 'Hide comments & activity' : 'Show comments & activity'}
@@ -590,10 +659,32 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           <button className="kanban-modal__action" title="Open on canvas" onClick={onOpenCanvas}>
             <IconExternal />
           </button>
+          {onDelete && (
+            <button
+              className="kanban-modal__action"
+              title="Delete this session"
+              aria-label="Delete"
+              onClick={() => {
+                onClose()
+                onDelete()
+              }}
+            >
+              <IconTrash />
+            </button>
+          )}
           <button className="kanban-modal__action" title="Close" onClick={onClose}>
             <IconClose />
           </button>
         </div>
+        {colorMenu && colorMenuOpen && onSetColor && (
+          <ContextMenu
+            x={colorMenu.x}
+            y={colorMenu.y}
+            zIndex={65}
+            items={[{ type: 'colors', onPick: onSetColor }]}
+            onClose={() => setColorMenu(null)}
+          />
+        )}
         <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
         <CardPullRequests session={session} board={board} onChangeBoard={onChangeBoard} />
         <div className="kanban-modal__body">

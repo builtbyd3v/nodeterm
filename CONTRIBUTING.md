@@ -138,6 +138,16 @@ stacked swimlanes; it is off by default (`settings.omniKanbanEnabled`), has a de
 shortcut (`view.globalKanbanToggle`), and can be made the default for Cmd+Shift+B via
 `settings.omniKanbanAsDefault` — see CLAUDE.md for the full invariants.
 
+**Node actions live in one builder.** A row that acts on a canvas node — a menu item, a switch, a
+picker — goes in `renderer/lib/nodeActionItems.tsx`, never inline in `Canvas.tsx`. The canvas node
+menu, the sessions-sidebar row menu and both kanban card menus (through
+`components/kanban/cardMenu.tsx`) build from it. Decide in the same change whether a card offers
+the new row: a card takes only `BOARD_NODE_ACTION_IDS`, and a row that acts on canvas position goes
+in `BOARD_SPATIAL_ROW_IDS` instead. Remember the board acts on nodes of projects that are NOT on the
+canvas (the Omni board): write through Canvas's `nodeWritesFor(projectId)` (built on
+`createNodeWriteRouter`, `lib/nodeWriteRouter.ts`), never a live-canvas callback, and report a failure with a `nodeterm:toast`.
+`lib/nodeActionItems.guard.test.ts` fails on a second copy of the rows.
+
 A board card's **source** is a registry entry, not a branch you add at a call site
 (`renderer/lib/kanbanSources.ts`). Declare the source once — filter label, `placement`
 (`assignment` = the board's own persisted assignments, `provider` = the provider owns the column),
@@ -328,10 +338,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   never grants anything, a waived action still announces itself on screen and NAMES the waiver that
   let it through, and which gates may be waived at all is a TABLE, not an `if` at each call site —
   so "this one can never be waived" is a tested fact rather than a line somebody forgot to write.
-  **What a dialog may grant is bounded by SCOPE, not by permanence.** It offers "while nodeterm is
-  running" (in-memory — not `settings.json`, not `localStorage`, so quitting restores the gate) or
-  "always in this project" (machine-local, keyed by project id, pruned like
-  `settings.sidebarCollapsedItems`). The machine-WIDE waiver stays Settings-only, because that is
+  **What a dialog may grant is bounded by SCOPE, not by permanence.** It offers, as radios visible
+  from the start with "ask me again" selected, "don't ask again for agents in <project>"
+  (machine-local, keyed by project id, pruned like `settings.sidebarCollapsedItems`) or "don't ask
+  again in any project until nodeterm quits" (in-memory — not `settings.json`, not `localStorage`,
+  so quitting restores the gate). Hiding a reach behind a checkbox made it read as missing. The machine-WIDE waiver stays Settings-only, because that is
   the one a stray click in a dialog that appeared under the user's hands must not be able to grant.
   Offering only the app-run one was its own failure: it is not what a user who ticks "don't ask
   again" means, so the real choices were "be asked forever" or "turn it off everywhere". Two rules

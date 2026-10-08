@@ -15,6 +15,8 @@ import { commandTooltip } from '../lib/keybindingOverrides'
 import { IconCanvasView, IconKanban, IconMoreVertical, IconPlus, IconUpdate } from './icons'
 import { runPendingUpdate, usePendingUpdate } from '../state/pendingUpdate'
 import { ProjectGlyph } from './ProjectGlyph'
+import { useTooltip } from './Tooltip'
+import { projectTabTooltip } from '../lib/projectTabTooltip'
 import {
   ALL_PERMISSION_MODES,
   PERMISSION_MODE_LABELS,
@@ -118,6 +120,10 @@ export function TabBar({
     null
   )
   const [editingId, setEditingId] = useState<string | null>(null)
+  // One tooltip for the whole strip: a resting pointer shows the hovered tab's location
+  // (projectTabTooltip). The label is set as the pointer enters a tab, before the dwell runs out.
+  const [tabTipLabel, setTabTipLabel] = useState('')
+  const tabTip = useTooltip(tabTipLabel, { delay: 500 })
   const [draft, setDraft] = useState('')
   // The stored name the editor opened on. Committing the cut draft of an over-long one
   // (issue #940) stores that cut: the user asked to rename and sees what will be stored.
@@ -337,7 +343,18 @@ export function TabBar({
                 // project's colour.
                 style={swimlaneHighlight ? { color: p.color } : undefined}
                 draggable={editingId !== p.id}
+                onMouseEnter={(e) => {
+                  // Not over the rename box or this tab's own open menu, where it would cover them.
+                  if (editingId === p.id || menuId === p.id) return
+                  const label = projectTabTooltip(p, sessionForProject(p.id).source)
+                  if (!label) return
+                  setTabTipLabel(label)
+                  tabTip.triggerProps.onMouseEnter(e)
+                }}
+                onMouseLeave={tabTip.triggerProps.onMouseLeave}
+                onMouseDown={tabTip.triggerProps.onMouseDown}
                 onDragStart={(e) => {
+                  tabTip.triggerProps.onMouseLeave()
                   e.dataTransfer.effectAllowed = 'move'
                   setDragId(p.id)
                 }}
@@ -376,17 +393,6 @@ export function TabBar({
                   if (action === 'switch') onSwitch(p.id)
                   else if (action === 'reconnect') onReconnect(p.id)
                 }}
-                title={
-                  p.unavailable
-                    ? sessionForProject(p.id).source === 'local'
-                      ? `${p.cwd ?? 'project'} is unavailable (folder missing or unreachable)`
-                      : `${p.name} disconnected, click to reconnect`
-                    : p.ssh
-                      ? `${p.ssh.server.user}@${p.ssh.server.host}:${p.ssh.remoteCwd}`
-                      : p.relaySsh
-                        ? `${p.relaySsh.user}@${p.relaySsh.host}:${p.relaySsh.remoteCwd}`
-                        : p.cwd || undefined
-                }
               >
                 <ProjectGlyph
                   icon={p.icon}
@@ -500,6 +506,8 @@ export function TabBar({
           </button>
         </div>
       </div>
+
+      {tabTip.bubble}
 
       {menuId &&
         menuPos &&

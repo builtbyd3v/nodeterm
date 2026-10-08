@@ -115,6 +115,20 @@ import { Dock } from '../components/Dock'
 import { TabBar } from '../components/TabBar'
 import { ContextMenu, type MenuItem } from '../components/ContextMenu'
 import { tidySeparators } from '../lib/tidySeparators'
+import {
+  createNodeWriteRouter,
+  ICON_PICKER_FAILED_MESSAGE,
+  type NodeWrites
+} from '../lib/nodeWriteRouter'
+import {
+  BOARD_NODE_ACTION_IDS,
+  buildNodeActionItems,
+  offCanvasNodeActionCtx,
+  OFF_CANVAS_REFUSAL,
+  restartAgentIdOf,
+  type NodeActionCtx,
+  type NodeActionFilter
+} from '../lib/nodeActionItems'
 import { CommandPalette, type Command } from '../components/CommandPalette'
 import { Tooltip } from '../components/Tooltip'
 import {
@@ -136,7 +150,6 @@ import {
   IconJump,
   IconKanban,
   IconLock,
-  IconMarkdown,
   IconMinus,
   IconNote,
   IconPhone,
@@ -144,13 +157,11 @@ import {
   IconPlus,
   IconPower,
   IconProject,
-  IconReload,
   IconRemote,
   IconSave,
   IconSearch,
   IconSelectAll,
   IconSessions,
-  IconSmiley,
   IconSwitch,
   IconTerminal,
   IconTrash,
@@ -214,7 +225,6 @@ import {
 } from '../lib/addMenuSpec'
 import { planSetProjectFolder } from '../lib/setProjectFolder'
 import { effectiveAccountId, observationIsRemote, type ObservationOrigin } from '../lib/accountChip'
-import { transferConversationItems } from '../lib/transferItems'
 import { reopenVariants } from '../lib/reopenVariants'
 import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { useModelGateway } from '../state/modelGateway'
@@ -390,7 +400,7 @@ import {
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from '../lib/nodeMaximize'
 import { measurePinnedInsets, type ScreenInsets } from '../lib/pinnedInsets'
 import { measureMaximizeInsets, MAXIMIZE_CHROME_SELECTOR } from '../lib/maximizeInsets'
-import { ZONE_GUTTER_PX, ZONES, zoneTargetRect, type ZoneId } from '../lib/nodeZones'
+import { ZONE_GUTTER_PX, zoneTargetRect, type ZoneId } from '../lib/nodeZones'
 import {
   recordBreadcrumb,
   stepBreadcrumb,
@@ -416,7 +426,6 @@ import {
   exitTimeoutNotice,
   guardConcurrentRestart,
   planBulkRestart,
-  clearEnvEligibility,
   restartEligibility,
   restartSessionId,
   runBoundedBulkRestart,
@@ -529,7 +538,6 @@ import {
   createdAgentId,
   resumeCommand,
   canResumeWith,
-  vanillaEnvStripPattern,
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   resolvePermissionMode,
@@ -812,8 +820,10 @@ import { useExpiringDialog } from '../lib/useExpiringDialog'
 import {
   confirmExpiresAt,
   isWaivableVerb,
+  waiveChoices,
   waivedNotice,
-  CONTROL_REQUEST_TIMEOUT_MS
+  CONTROL_REQUEST_TIMEOUT_MS,
+  type ConfirmWaiveChoice
 } from '@shared/control-confirm'
 import { useControlConfirm } from '../state/controlConfirm'
 import { controlConfirmDecision, waiveControlConfirmForProject } from '../state/controlConfirmGate'
@@ -836,7 +846,6 @@ import {
   agentLaunchOverride,
   claudeLaunchCommand,
   toggleCollapsed,
-  canToggleCollapse,
   endMaximizeOnUserGeometry,
   movedGestureEnds,
   alignNodes,
@@ -899,7 +908,6 @@ import { resolveNewCodexNodeAccount, planCodexAccountSwitch } from './codex-acco
 import {
   bulkSwitchCandidates,
   claudeSwitchHostKey,
-  claudeSwitchTargets,
   planClaudeAccountSwitch,
   startBulkSwitch,
   summarizeBulkSwitch,
@@ -1218,15 +1226,6 @@ const toBridgeLink = (e: Edge): BridgeLink => ({ id: e.id, source: e.source, tar
 
 const minimapNodeColor = (n: Node): string =>
   (n.data as { color?: string })?.color ?? '#0a84ff'
-
-/** The agent a terminal node was CREATED as. Deliberately NOT `agentIdOf`, whose extra hook-status
- *  fallback also reports a plain terminal someone typed `claude` into by hand: TerminalNode's
- *  restart closure captures `createdAgentId` too — the ONE shared derivation — so a node offered a
- *  restart on the strength of the wider one would get a row whose closure refuses every click.
- *  Anything that is not a terminal (a sticky, an editor) is undefined, which `restartEligibility`
- *  reads as `not-resumable`. */
-const restartAgentIdOf = (n: Node | undefined): AgentId | undefined =>
-  !n || n.type !== 'terminal' ? undefined : createdAgentId(n.data)
 
 /** Stable empty card list, so the closed board's memo never churns array identity. */
 const NO_KANBAN_SESSIONS: KanbanSession[] = []
@@ -2119,14 +2118,12 @@ export function Canvas() {
     confirmFlags.current.confirm = !!v
     setConfirmState(v)
   }, [])
-  // "Don't ask again" on an agent-requested destructive confirm. Canvas state rather than a field
-  // on `ConfirmState` so the checkbox reads and writes LIVE (see `ConfirmState.waiveVerb`); reset
-  // by the dispatch every time it raises one of those dialogs, so a tick never carries over to the
-  // next request.
-  const [controlWaive, setControlWaive] = useState(false)
-  /** How far the tick above reaches. `session` is the DEFAULT and the pre-existing behaviour — a
-   *  waiver a dialog grants must stay the bounded one unless the user says otherwise. */
-  const [controlWaiveScope, setControlWaiveScope] = useState<'session' | 'project'>('session')
+  // "Don't ask again" on an agent-requested destructive confirm (@shared/control-confirm
+  // `waiveChoices`). Canvas state rather than a field on `ConfirmState` so the radios read and
+  // write LIVE (see `ConfirmState.waiveVerb`); reset to `ask` by the dispatch every time it raises
+  // one of those dialogs, so a choice never carries over to the next request. `ask` is the DEFAULT
+  // and is not a waiver: an untouched dialog grants nothing.
+  const [controlWaiveChoice, setControlWaiveChoice] = useState<ConfirmWaiveChoice>('ask')
   /**
    * An agent-requested confirm collects itself when its REQUEST has expired.
    *
@@ -8586,142 +8583,6 @@ export function Canvas() {
     return ready.length + busy.length
   }, [])
 
-  /**
-   * The running-node "Switch Claude account ▸" / "Switch Codex account ▸" rows for one node. ONE
-   * builder for the canvas node menu and the kanban card menu — the board is a second view of the
-   * same node, and two copies of these rows would drift. Carries the same gate the Restart row does
-   * (`restartEligibility` + a wired restart closure): a busy, id-less or detached node shows the
-   * rows disabled with the reason.
-   */
-  const accountSwitchRows = useCallback(
-    (nodeId: string): MenuItem[] => {
-      const n = nodesRef.current.find((x) => x.id === nodeId)
-      const st = useAgentStatus.getState().byId[nodeId]
-      const sourceAgentId = restartAgentIdOf(n)
-      const sessionId = restartSessionId(st?.sessionId, n?.data.agentSessionId)
-      const gate = restartEligibility(sourceAgentId, st?.state, sessionId)
-      if (!gate.ok && gate.reason === 'not-resumable') return []
-      const why = !gate.ok
-        ? gate.reason === 'working'
-          ? 'This session is busy — switch it once its turn (or permission prompt) is done.'
-          : 'Nothing to resume yet — this session has not reported an id.'
-        : !agentRestartFn(nodeId)
-          ? 'This terminal is not attached right now.'
-          : undefined
-      return [
-    // Switch this running Claude node onto another account already logged in on its
-    // machine — this one, or the SSH host its pane runs on — with no /login in the pane
-    // (`switchClaudeAccountNode`). Shown only when there is somewhere to switch to.
-    ...(sourceAgentId === 'claude'
-      ? (() => {
-          const settingsNow = useSettings.getState().settings
-          const hostKey = claudeSwitchHostKey(n)
-          const unswitchable =
-            session.source === 'relay' || (!!n && isRemoteSessionNode(n.data) && !hostKey)
-          const targets = claudeSwitchTargets(settingsNow.claudeAccounts, hostKey)
-          if (targets.length === 0) return []
-          const currentAccountId = (n?.data.accountId as string | undefined) || undefined
-          // The system row names the machine it is on: an SSH node's is the HOST's
-          // `~/.claude`, whose identity this machine's system email says nothing about.
-          const systemLabel = hostKey
-            ? `System account (${hostKey})`
-            : systemAccountDisplay(
-                settingsNow.systemAccountLabel,
-                useSystemAccount.getState().email
-              )
-          const row = (id: string | undefined, label: string): MenuItem => {
-            const isCurrent = (id || undefined) === currentAccountId
-            return {
-              label: `${isCurrent ? '✓ ' : ''}${label}`,
-              icon: <AgentIcon agentId="claude" />,
-              disabled: !!why || isCurrent,
-              hint: isCurrent
-                ? 'This node already runs on this account.'
-                : (why ??
-                  'Quits Claude, moves this conversation to the account and resumes it there — no login needed.'),
-              onClick: () => void switchClaudeAccountNode(nodeId, id, label)
-            }
-          }
-          if (unswitchable)
-            return [
-              {
-                label: 'Switch Claude account',
-                icon: <IconSwitch />,
-                disabled: true,
-                hint: 'Not available for relay sessions.',
-                onClick: () => {}
-              }
-            ] as MenuItem[]
-          return [
-            {
-              type: 'submenu',
-              label: 'Switch Claude account',
-              icon: <IconSwitch />,
-              children: [
-                row(undefined, systemLabel),
-                ...targets.map((a) => row(a.id, a.label || a.email || 'Account'))
-              ]
-            }
-          ] as MenuItem[]
-        })()
-      : []),
-    // Switch this running Codex node onto another machine-scoped account (S6 §3.5). Shown
-    // only for a Codex node with managed accounts on its machine. Each row is gated through
-    // `codexAccountSelectable`; the actual switch is owner-authorized MAIN-SIDE and resumes
-    // the SAME conversation id (`switchCodexAccountNode`) — the UI is not the boundary.
-    ...(sourceAgentId === 'codex'
-      ? (() => {
-          const codexAll = useSettings.getState().settings.codexAccounts
-          const hostKey = n?.data.ssh ? sshHostKey(n.data.ssh as SshServer) : undefined
-          const onMachine = codexAll.filter(
-            (a) => !a.pending && (hostKey ? a.host === hostKey : !a.host)
-          )
-          if (onMachine.length === 0) return []
-          const currentAccountId = (n?.data.accountId as string | undefined) || undefined
-          // The system row names ITS machine: an SSH node's is the host's own `~/.codex`, whose
-          // login this machine's system email says nothing about.
-          const systemCodexLabel = hostKey
-            ? (useSystemCodexAccount.getState().remoteEmails[hostKey] ?? `System account (${hostKey})`)
-            : systemAccountDisplay(undefined, useSystemCodexAccount.getState().email)
-          const row = (
-            id: string | undefined,
-            label: string
-          ): MenuItem => {
-            const isCurrent = (id || undefined) === currentAccountId
-            const sel = codexAccountSelectable(id, onMachine, connectedProjectIdForHost)
-            return {
-              label: `${isCurrent ? '✓ ' : ''}${label}`,
-              icon: <AgentIcon agentId="codex" />,
-              disabled: !!why || isCurrent || !sel.ok,
-              hint: isCurrent
-                ? 'This node already runs on this account.'
-                : !sel.ok
-                  ? sel.reason === 'no-connection'
-                    ? 'This account lives on a host that is not connected.'
-                    : 'This account is no longer available.'
-                  : (why ??
-                    'Moves this conversation to the account and resumes it there (same conversation).'),
-              onClick: () => void switchCodexAccountNode(nodeId, id)
-            }
-          }
-          return [
-            {
-              type: 'submenu',
-              label: 'Switch Codex account',
-              icon: <IconSwitch />,
-              children: [
-                row(undefined, systemCodexLabel),
-                ...onMachine.map((a) => row(a.id, a.label))
-              ]
-            }
-          ] as MenuItem[]
-        })()
-      : []),
-      ]
-    },
-    [switchClaudeAccountNode, switchCodexAccountNode, connectedProjectIdForHost, session.source]
-  )
-
   // Who the bulk restart would act on, right now: the ACTIVE project's canvas (nodesRef holds
   // exactly that). Read fresh at every call — agent state and session ids arrive asynchronously.
   const bulkRestartPlan = useCallback((): BulkRestartPlan => {
@@ -8978,9 +8839,49 @@ export function Canvas() {
         nodeId,
         title: (node.data.title as string) ?? '',
         icon: node.data.icon as NodeIcon | undefined
-      }).then((choice) => applyIconChoice(choice, (icon) => setNodeIcon(nodeId, icon)))
+      }).then(
+        (choice) => applyIconChoice(choice, (icon) => setNodeIcon(nodeId, icon)),
+        // A picker that fails to open is reported, the same sentence the off-canvas path uses —
+        // an unanswered rejection here was a click that did nothing at all.
+        () =>
+          window.dispatchEvent(
+            new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: ICON_PICKER_FAILED_MESSAGE } })
+          )
+      )
     },
     [setNodeIcon]
+  )
+
+  /** Writes to one node of `projectId`, wherever it lives right now: React Flow when it holds that
+   *  project, else the projects store + disk (lib/nodeWriteRouter). Used by the kanban card menus
+   *  and the Omni board, which act on nodes of projects that are not on the canvas. */
+  const nodeWritesFor = useCallback(
+    (projectId: string): NodeWrites =>
+      createNodeWriteRouter({
+        isLive: () =>
+          liveCanvasHolds(nodesProjectIdRef.current, useProjects.getState().activeProjectId, projectId),
+        liveHas: (nodeId) => nodesRef.current.some((n) => n.id === nodeId),
+        live: { setColor: setNodesColor, setIcon: setNodeIcon, pickIcon: pickNodeIcon },
+        storedNode: (nodeId) =>
+          useProjects.getState().getProject(projectId)?.nodes.find((n) => n.id === nodeId),
+        recolorStored: (nodeId, color) => useProjects.getState().recolorNode(projectId, nodeId, color),
+        // Through the store's own-write path (like `recolorNode`), never a raw setState: that is
+        // what marks the write as ours and publishes it to a stored canvas with an authority (a
+        // hosted team), so a later saved overlay cannot quietly drop the icon.
+        setStoredIcon: (nodeId, icon) => {
+          const st = useProjects.getState()
+          const node = st.getProject(projectId)?.nodes.find((n) => n.id === nodeId)
+          if (node) st.applyOwnNodeMutation(projectId, { op: 'upsert', node: { ...node, icon } })
+        },
+        // `persist`, not `writeDisk`: the snapshot must carry the live canvas too. `writeDisk`
+        // alone writes the store's copy and then clears `dirty` — so a live edit still inside the
+        // autosave debounce was marked saved without ever reaching disk.
+        persist,
+        iconDialog: nodeIconDialog,
+        toast: (message) =>
+          window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      }),
+    [setNodesColor, setNodeIcon, pickNodeIcon, persist]
   )
 
   const alignToGrid = useCallback(
@@ -10398,486 +10299,141 @@ export function Canvas() {
     return node.selected && selected.length > 0 ? selected : [node.id]
   }, [])
 
-  /** `at` is where the menu was opened, in flow coordinates: every entry that SPAWNS a node
+  /** Everything the node action rows (lib/nodeActionItems) read from, or do through, the LIVE
+   *  canvas. Built fresh on every menu open, like the rows themselves. */
+  const liveNodeActionCtx = useCallback(
+    (): NodeActionCtx => ({
+      nodes: nodesRef.current as CanvasNode[],
+      sessionSource: session.source,
+      attached: (nodeId) => !!agentRestartFn(nodeId),
+      agentIdOf,
+      gatewayModels,
+      gatewayStatus,
+      gatewayError,
+      grokModels: () => grokModelList(),
+      cursorModels: () => cursorModelList(),
+      addToExistingGroup,
+      groupSelection,
+      removeFromGroup,
+      setNodesColor,
+      pickNodeIcon,
+      duplicateNodes,
+      snapNodeToZone,
+      toggleCollapseNodes,
+      toggleMarkdown,
+      reloadTerminals,
+      liveLinkMenuItems: (nodeId) => liveLinkMenuItems(nodeId),
+      branchClaude,
+      transferConversation,
+      restartAgentNode,
+      pauseAgentNode,
+      resumeAgentNode,
+      switchClaudeAccountNode,
+      switchCodexAccountNode,
+      connectedProjectIdForHost,
+      deleteNodes: (ids) => deleteNodes(ids)
+    }),
+    [
+      agentIdOf,
+      gatewayModels,
+      gatewayStatus,
+      gatewayError,
+      addToExistingGroup,
+      groupSelection,
+      removeFromGroup,
+      setNodesColor,
+      pickNodeIcon,
+      duplicateNodes,
+      snapNodeToZone,
+      toggleCollapseNodes,
+      toggleMarkdown,
+      reloadTerminals,
+      liveLinkMenuItems,
+      branchClaude,
+      transferConversation,
+      restartAgentNode,
+      pauseAgentNode,
+      resumeAgentNode,
+      switchClaudeAccountNode,
+      switchCodexAccountNode,
+      connectedProjectIdForHost,
+      deleteNodes,
+      session.source
+    ]
+  )
+
+  /** The canvas node menu (and, with `omit: ['delete']`, the sessions-sidebar row menu). The rows
+   *  live in lib/nodeActionItems — one builder for the canvas, the sidebar and the kanban cards.
+   *  `at` is where the menu was opened, in flow coordinates: every entry that SPAWNS a node
    *  (Duplicate / Branch / Transfer) puts it there, instead of somewhere the user never pointed. */
-  const selectionItems = useCallback((ids: string[], at?: { x: number; y: number }): MenuItem[] => {
-    // Rows the user chose to hide (Settings). Read here rather than through a selector because the
-    // menu is rebuilt on every open — a toggle applies to the next right-click with no reload.
-    // Destructive/recovery rows (Delete, Restart agent, Branch/Transfer) are not hideable at all:
-    // `isHidden` only answers for ids in its own inventory.
-    const hidden = useSettings.getState().settings.hiddenNodeMenuItems
-    // Stop agent control — the node context-menu surface for Stop (Task 6.4). Shown only for a
-    // single browser node that is actually being driven; it revokes for real (main detaches the
-    // debugger + drops the ledger entry), not just hides the chip. Read fresh, like every other row.
-    const drivenHere =
-      ids.length === 1 && drivingNodeIds(useBrowserLease.getState().entries, Date.now()).has(ids[0])
-    return tidySeparators([
-      { type: 'label', label: ids.length > 1 ? `${ids.length} nodes` : '1 node' },
-      ...(drivenHere
-        ? ([
-            {
-              label: 'Stop agent control',
-              onClick: () => window.nodeTerminal.browser.stop(ids[0])
-            },
-            { type: 'separator' }
-          ] as MenuItem[])
-        : []),
-      ...((): MenuItem[] => {
-        // "Group …" wraps objects that share ONE container — existing frames are valid members
-        // now that frames nest. A box-selection that caught a frame AND its children is
-        // normalized to its subtree roots first (selectedRootIds), so the children are not torn
-        // out of the frame being wrapped; a set spanning two containers is refused, because
-        // their positions are not comparable. "Remove from group" only when a target is inside
-        // a frame (the frame stays).
-        const selectedNodes = ids
-          .map((nid) => nodesRef.current.find((node) => node.id === nid))
-          .filter((node): node is CanvasNode => !!node)
-        const rootIds = selectedRootIds(nodesRef.current as CanvasNode[], ids)
-        const rootSet = new Set(rootIds)
-        const rootNodes = selectedNodes.filter((node) => rootSet.has(node.id))
-        const groupable =
-          rootNodes.length > 0 &&
-          (ids.length === 1 || rootNodes.length > 1) &&
-          new Set(rootNodes.map((node) => node.parentId ?? null)).size === 1
-        // Frames in the selection that this selection could actually be ADDED to (the pure
-        // transform is asked, so the item can never be a no-op).
-        const targetGroups = selectedNodes.filter(
-          (node) =>
-            node.type === 'group' &&
-            addSelectionToGroup(nodesRef.current as CanvasNode[], ids, node.id) !==
-              nodesRef.current
-        )
-        const parented = ids.some(
-          (nid) => !!nodesRef.current.find((nd) => nd.id === nid)?.parentId
-        )
-        const items: MenuItem[] = []
-        if (targetGroups.length === 1 && !isHidden('group', hidden)) {
-          const targetGroup = targetGroups[0]
-          items.push({
-            label: `Add selection to ${targetGroup.data.title || 'group'}`,
-            icon: <IconGroup />,
-            onClick: () => addToExistingGroup(ids, targetGroup.id)
-          })
-        } else if (targetGroups.length > 1 && !isHidden('group', hidden)) {
-          items.push({
-            type: 'submenu',
-            label: 'Add selection to group',
-            icon: <IconGroup />,
-            children: targetGroups.map((targetGroup) => ({
-              label: targetGroup.data.title || 'Group',
-              icon: <IconGroup />,
-              onClick: () => addToExistingGroup(ids, targetGroup.id)
-            }))
-          })
+  const selectionItems = useCallback(
+    (ids: string[], at?: { x: number; y: number }, filter?: NodeActionFilter): MenuItem[] =>
+      buildNodeActionItems(ids, at, liveNodeActionCtx(), filter),
+    [liveNodeActionCtx]
+  )
+
+  /** The node action context for a node of `projectId`: the live canvas when React Flow holds
+   *  that project, else its stored copy (lib/nodeActionItems `offCanvasNodeActionCtx`). Writes go
+   *  through the project's router either way, so a board write can never land on the wrong canvas. */
+  const nodeActionCtxFor = useCallback(
+    (projectId: string): NodeActionCtx => {
+      const writes = nodeWritesFor(projectId)
+      const liveLink = (nodeId: string): MenuItem[] => liveLinkMenuItems(nodeId, projectId)
+      if (liveCanvasHolds(nodesProjectIdRef.current, useProjects.getState().activeProjectId, projectId)) {
+        return {
+          ...liveNodeActionCtx(),
+          setNodesColor: writes.setColor,
+          pickNodeIcon: writes.pickIcon,
+          liveLinkMenuItems: liveLink
         }
-        if (groupable && !isHidden('group', hidden))
-          items.push({
-            label: rootIds.length > 1 ? 'Group selection' : 'Group node',
-            icon: <IconGroup />,
-            onClick: () => groupSelection(rootIds)
-          })
-        if (parented && !isHidden('remove-from-group', hidden))
-          items.push({
-            label: 'Remove from group',
-            icon: <IconUngroup />,
-            onClick: () => removeFromGroup(ids)
-          })
-        if (items.length) items.push({ type: 'separator' })
-        return items
-      })(),
-      ...(isHidden('colors', hidden)
-        ? []
-        : ([{ type: 'colors', onPick: (c) => setNodesColor(ids, c) }] as MenuItem[])),
-      // Single target, and only a SESSION node: an icon is how you tell two sessions apart, so
-      // setting one across a multi-selection is the opposite of the point — and offering it on a
-      // kind that draws no icon (an editor, a diff, a group frame) would be a row that persists a
-      // value nothing ever shows, which is worse than no row at all.
-      ...(ids.length === 1 &&
-      !isHidden('icon', hidden) &&
-      nodesRef.current.find((n) => n.id === ids[0])?.type === 'terminal'
-        ? ([
-            {
-              label: nodesRef.current.find((n) => n.id === ids[0])?.data.icon
-                ? 'Change icon…'
-                : 'Set icon…',
-              icon: <IconSmiley />,
-              onClick: () => pickNodeIcon(ids[0])
-            }
-          ] as MenuItem[])
-        : []),
-      { type: 'separator' },
-      ...(isHidden('duplicate', hidden)
-        ? []
-        : ([
-            { label: 'Duplicate', icon: <IconDuplicate />, onClick: () => duplicateNodes(ids, at) }
-          ] as MenuItem[])),
-      // Zone snap (issue #394 v1): place THIS node into a region of the visible canvas at that
-      // region's size — halves/quarters/thirds. Single non-group, non-collapsed target only (the
-      // same declines as the ⌃⌥arrow chords; a multi-selection stacking into one zone is noise).
-      ...(ids.length === 1 &&
-      !isHidden('snap-zone', hidden) &&
-      (() => {
-        const n = nodesRef.current.find((nd) => nd.id === ids[0])
-        return !!n && n.type !== 'group' && !n.data.collapsed
-      })()
-        ? ([
-            {
-              type: 'submenu',
-              label: 'Snap to zone',
-              icon: <IconGrid />,
-              children: ZONES.map((z) => ({
-                label: z.label,
-                onClick: () => snapNodeToZone(z.id, ids[0])
-              }))
-            }
-          ] as MenuItem[])
-        : []),
-      ...(isHidden('collapse', hidden) ||
-      !ids.some((nid) => {
-        const n = nodesRef.current.find((nd) => nd.id === nid)
-        return !!n && canToggleCollapse(n)
+      }
+      const project = useProjects.getState().getProject(projectId)
+      return offCanvasNodeActionCtx({
+        nodes: project ? nodeStatesToFlow(project.nodes) : [],
+        sessionSource: sessionForProject(projectId).source,
+        gatewayModels,
+        gatewayStatus,
+        gatewayError,
+        grokModels: () => grokModelList(),
+        cursorModels: () => cursorModelList(),
+        writes,
+        liveLinkMenuItems: liveLink,
+        connectedProjectIdForHost,
+        refuse: () =>
+          window.dispatchEvent(
+            new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: OFF_CANVAS_REFUSAL } })
+          )
       })
-        ? []
-        : ([
-            {
-              label: 'Collapse / Expand',
-              icon: <IconCollapse />,
-              onClick: () => toggleCollapseNodes(ids)
-            }
-          ] as MenuItem[])),
-      ...(ids.some((nid) => nodesRef.current.find((n) => n.id === nid)?.type === 'terminal')
-        ? ([
-            ...(isHidden('markdown-view', hidden)
-              ? []
-              : [
-                  {
-                    label: 'Markdown view',
-                    icon: <IconMarkdown />,
-                    onClick: () => toggleMarkdown(ids)
-                  }
-                ]),
-            ...(isHidden('refresh-terminal', hidden)
-              ? []
-              : [
-                  {
-                    label: 'Refresh terminal',
-                    icon: <IconReload />,
-                    hint: 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
-                    onClick: () => reloadTerminals(ids)
-                  }
-                ]),
-            // Share live link… — single terminal only; disabled with its reason where it cannot
-            // work, hideable as `live-link` (the shared builder applies both).
-            ...(ids.length === 1 ? liveLinkMenuItems(ids[0]) : [])
-          ] as MenuItem[])
-        : []),
-      // Conversation actions — Branch, Transfer ▸ (targets, then models), Restart ▸, Pause — sit
-      // together below the view actions, each ONE row: the per-target Transfer list and the six-odd
-      // restart variants used to be spliced in flat, which made an agent node's menu run off screen.
-      { type: 'separator' },
-      ...(ids.length === 1 && (() => {
-        const a = agentIdOf(ids[0])
-        return !!a && canBranch(a)
-      })()
-        ? ([
-            {
-              label: 'Branch conversation',
-              icon: <IconBranch />,
-              onClick: () => void branchClaude(ids[0], { at })
-            }
-          ] as MenuItem[])
-        : []),
-      ...(ids.length === 1
-        ? transferConversationItems(ids[0], at, {
-            sourceAgentId: agentIdOf(ids[0]),
-            sessionId: useAgentStatus.getState().byId[ids[0]]?.sessionId,
-            disabledAgents: useSettings.getState().settings.disabledAgents,
-            customAgents: useSettings.getState().settings.customAgents,
-            gatewayModels,
-            relaySession: session.source === 'relay'
-          }, transferConversation)
-        : []),
-      // Restart the agent CLI itself (single selection): quit it and relaunch with `--resume`, so a
-      // newly released model appears in its model list with the conversation intact. Unlike "Reload
-      // terminal" above (which re-attaches the pane and leaves the CLI running) this one types into
-      // the session, so the row is shown only for a CLI we know how to quit AND resume.
-      ...(ids.length === 1
-        ? (() => {
-            const n = nodesRef.current.find((x) => x.id === ids[0])
-            const st = useAgentStatus.getState().byId[ids[0]]
-            const sourceAgentId = restartAgentIdOf(n)
-            const sessionId = restartSessionId(st?.sessionId, n?.data.agentSessionId)
-            const gate = restartEligibility(sourceAgentId, st?.state, sessionId)
-            const settings = useSettings.getState().settings
-            const variants = sourceAgentId
-              ? reopenVariants(sourceAgentId, settings.customAgents, settings.disabledAgents)
-              : []
-            const switchCapable = !!sourceAgentId && canSwitchModel(sourceAgentId)
-            const compatibleModels = sourceAgentId && session.source !== 'relay'
-              ? modelsForAgent(
-                  gatewayModels,
-                  sourceAgentId,
-                  grokModelList(),
-                  // Only a cursor node may pay for it: an empty memo spawns `cursor-agent models`.
-                  capabilityAgentId(sourceAgentId) === 'cursor' ? cursorModelList() : []
-                )
-              : []
-            const currentModel =
-              typeof n?.data.agentModel === 'string' ? n.data.agentModel : undefined
-            // 'not-resumable' is permanent (a plain shell, opencode, a custom CLI with no exit
-            // command) — no row at all. The other two are temporary, so the row stays and says
-            // what to wait for instead of disappearing and teaching nothing.
-            if (!gate.ok && gate.reason === 'not-resumable') return []
-            // The registry answers "is this node mounted and wired" only: every terminal node
-            // registers, agent or not.
-            const why = !gate.ok
-              ? gate.reason === 'working'
-                ? 'This session is busy — restart it once its turn (or permission prompt) is done.'
-                : 'Nothing to resume yet — this session has not reported an id.'
-              : !agentRestartFn(ids[0])
-                ? 'This terminal is not attached right now.'
-                : // Not every dead end is visible from here: the closure ALSO refuses a tmux
-                  // session that is closed / ended / gone, and a pane it cannot observe at all
-                  // (tmux off / absent — it pre-flights one `pane_current_command` before writing
-                  // anything). Only the node knows the first, and the second costs an IPC that must
-                  // not run per menu RENDER. Both reach the user through `restartAgentNode`'s skip
-                  // notice, which names them, rather than through a hint this row cannot compute.
-                  undefined
-            // Pause/Resume have their OWN eligibility, computed on `st?.sessionId` alone — NOT
-            // `sessionId` above, which also falls back to `n?.data.agentSessionId` (the id
-            // nodeterm minted at node creation, for a node whose hooks never landed). The `pause`/
-            // `resume` closures registered on the node gate on the live `st?.sessionId` only (see
-            // `registerAgentPause` / the hibernate `resume` closure), so a menu row lit by the
-            // fallback would enable here and then refuse in the closure with a generic "busy /
-            // not attached" notice about a node that is actually just idle with no reported id
-            // yet. Using the same narrower fact keeps what the row PROMISES in sync with what the
-            // closure can actually do.
-            const pauseGate = restartEligibility(sourceAgentId, st?.state, st?.sessionId)
-            const pauseWhy = !pauseGate.ok
-              ? pauseGate.reason === 'working'
-                ? 'This session is busy — try again once its turn (or permission prompt) is done.'
-                : 'Nothing to resume yet — this session has not reported an id.'
-              : undefined
-            const restartRows: MenuItem[] = [
-              {
-                label: 'Restart agent',
-                icon: <IconPower />,
-                disabled: !!why,
-                hint: why ?? 'Quits the CLI and relaunches it with --resume (same conversation).',
-                onClick: () => void restartAgentNode(ids[0])
-              },
-              // Restart agent AND shell: same quit + relaunch, but RECYCLES the tmux session so a
-              // FRESH shell spawns — re-sourcing the user's profile/env (a change to .zshrc, or an
-              // env var set after this node was created), which typing the resume line into the
-              // existing shell never picks up. Same eligibility gate as Restart; the cold-restore
-              // auto-resume on the fresh spawn relaunches the agent with --resume <sid>.
-              {
-                label: 'Restart agent and shell',
-                icon: <IconPower />,
-                // A relay session's shell lives on the HOST's core, so recycling it here can't
-                // re-source that machine's profile/env — the closure refuses it. Surface that as a
-                // DISABLED row with the real reason instead of an enabled row that fails with the
-                // generic "not attached" notice. (Plain Restart above still works over relay: it
-                // only types --resume, no recycle.)
-                disabled: !!why || session.source === 'relay',
-                hint:
-                  why ??
-                  (session.source === 'relay'
-                    ? 'Restart the shell on the machine hosting this relay session.'
-                    : 'Quits the CLI, respawns a fresh shell (picks up env/profile changes), then resumes.'),
-                onClick: () => void restartAgentNode(ids[0], undefined, undefined, true)
-              },
-              // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
-              // provider env so the agent falls back to its OWN default provider (Claude's
-              // subscription, Copilot's GitHub routing). No model/agent change; the cold-restore
-              // auto-resume keeps the same conversation. Shown only for an agent with a strip set
-              // (claude/codex/copilot builtins). Gated on `clearEnvEligibility`, NOT the shared `why`:
-              // clearEnv uses `terminateForeground` (SIGTERM by PID, no `/exit` into a dialog), so it
-              // is safe to interrupt a `working`/`blocked` session — which is its primary scenario
-              // (gateway overload shows up mid-turn, and "wait for the turn" is impossible when the
-              // gateway is down). Refused over relay for the same reason "Restart agent and shell" is
-              // — the stripped env belongs to this machine's settings store, not the host's core.
-              // Hideable (unlike the recovery restart rows above), because it is a convenience, not a
-              // recovery lever.
-              ...(vanillaEnvStripPattern(sourceAgentId ?? ('claude' as AgentId)) &&
-              !isHidden('vanilla-restart', hidden)
-                ? [
-                    {
-                      label:
-                        capabilityAgentId(sourceAgentId ?? ('claude' as AgentId)) === 'copilot'
-                          ? 'Restart on Copilot defaults'
-                          : 'Restart on subscription',
-                      icon: <IconPower />,
-                      disabled:
-                        !clearEnvEligibility(sourceAgentId, sessionId).ok ||
-                        session.source === 'relay' ||
-                        !agentRestartFn(ids[0]),
-                      hint:
-                        !clearEnvEligibility(sourceAgentId, sessionId).ok
-                          ? 'Nothing to resume yet — this session has not reported an id.'
-                          : session.source === 'relay'
-                            ? 'Restart the shell on the machine hosting this relay session.'
-                            : !agentRestartFn(ids[0])
-                              ? 'This terminal is not attached right now.'
-                              : 'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
-                      onClick: () =>
-                        void restartAgentNode(ids[0], undefined, undefined, undefined, true)
-                    }
-                  ]
-                : []),
-              // Below the plain restarts: the variants that restart INTO something else.
-              { type: 'separator' },
-              ...(variants.length
-                ? ([
-                    {
-                      type: 'submenu',
-                      label: 'Reopen session as',
-                      icon: <IconSwitch />,
-                      children: variants.map(
-                        (variant): MenuItem => ({
-                          label: variant.label,
-                          icon: <AgentIcon agentId={variant.id} />,
-                          disabled: !!why,
-                          hint:
-                            why ??
-                            `Quits this CLI and resumes the same session as ${variant.label}.`,
-                          onClick: () => void restartAgentNode(ids[0], variant.id)
-                        })
-                      )
-                    }
-                  ] as MenuItem[])
-                : []),
-            ]
-            // Switch model / account stay FIRST-level rows: they are everyday choices, not recovery
-            // restarts, and burying them under Restart ▸ cost an extra hover each time.
-            const switchRows: MenuItem[] = [
-              ...(switchCapable
-                ? compatibleModels.length
-                  ? ([
-                      {
-                        type: 'submenu',
-                        label: currentModel ? `Switch model (${currentModel})` : 'Switch model',
-                        icon: <IconSwitch />,
-                        children: compatibleModels.map(
-                          (model): MenuItem => ({
-                            label: `${model.id === currentModel ? '✓ ' : ''}${model.id}`,
-                            disabled: !!why || model.id === currentModel,
-                            hint:
-                              model.id === currentModel
-                                ? 'This node is already using this model.'
-                                : why ??
-                                  `Restarts the terminal session and resumes this conversation with ${model.id}.`,
-                            onClick: () =>
-                              void restartAgentNode(ids[0], undefined, model.id)
-                          })
-                        )
-                      }
-                    ] as MenuItem[])
-                  : ([
-                      {
-                        label: 'Switch model',
-                        icon: <IconSwitch />,
-                        disabled: true,
-                        hint:
-                          session.source === 'relay'
-                            ? 'Configure the model gateway on the machine hosting this relay session.'
-                            : gatewayStatus === 'loading'
-                              ? 'Discovering models…'
-                              : gatewayError ||
-                                'Configure a URL and API key in Settings → Model gateway.'
-                      }
-                    ] as MenuItem[])
-                : []),
-              // Switch Claude / Codex account — one builder shared with the kanban card menu.
-              ...accountSwitchRows(ids[0]),
-            ]
-            return [
-              // The restart variants — plain restart, fresh shell, subscription, reopen as another
-              // agent — behind ONE row.
-              {
-                type: 'submenu',
-                label: 'Restart',
-                icon: <IconPower />,
-                children: tidySeparators(restartRows)
-              },
-              ...switchRows,
-              // Pause session: quit the CLI (and, for the deeper choice, also end the tmux
-              // session) so it does NOT auto-resume on the next reveal or reopen — only an
-              // explicit Resume brings it back. Same eligibility as Restart above (`why`): a node
-              // this app cannot quit-and-resume has nothing for pause to do either. Already-paused
-              // shows Resume instead — the two never appear together.
-              ...(st?.paused
-                ? ([
-                    {
-                      label: 'Resume session',
-                      icon: <IconPower />,
-                      hint: 'Brings the conversation back.',
-                      onClick: () => void resumeAgentNode(ids[0])
-                    }
-                  ] as MenuItem[])
-                : ([
-                    {
-                      type: 'submenu',
-                      label: 'Pause session',
-                      icon: <IconPower />,
-                      children: [
-                        {
-                          label: 'Pause',
-                          disabled: !!pauseWhy,
-                          hint:
-                            pauseWhy ??
-                            'Quits the CLI; the tmux session stays so Resume is fast. Frees most of the memory.',
-                          onClick: () => void pauseAgentNode(ids[0], false)
-                        },
-                        {
-                          label: 'Pause & end session',
-                          // The deep depth recycles the tmux session, which — like the "Restart
-                          // agent and shell" recycle it shares the mechanism with — the closure
-                          // refuses on a relay session's core (the shell env belongs to the HOST).
-                          // Named here rather than left to the closure's generic "busy / not
-                          // attached" notice, which would be a wrong reason for a right refusal.
-                          disabled: !!pauseWhy || session.source === 'relay',
-                          hint:
-                            pauseWhy ??
-                            (session.source === 'relay'
-                              ? 'Ends the tmux session on the machine hosting this relay session, not here.'
-                              : 'Quits the CLI and ends its tmux session too, for a fuller memory reclaim. Resume starts a fresh session with the same conversation.'),
-                          onClick: () => void pauseAgentNode(ids[0], true)
-                        }
-                      ]
-                    }
-                  ] as MenuItem[]))
-            ] as MenuItem[]
-          })()
-        : []),
-      { type: 'separator' },
-      { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => deleteNodes(ids) }
-    ])
-  }, [
-    groupSelection,
-    addToExistingGroup,
-    removeFromGroup,
-    setNodesColor,
-    duplicateNodes,
-    branchClaude,
-    transferConversation,
-    agentIdOf,
-    toggleCollapseNodes,
-    toggleMarkdown,
-    reloadTerminals,
-    restartAgentNode,
-    pauseAgentNode,
-    resumeAgentNode,
-    switchCodexAccountNode,
-    switchClaudeAccountNode,
-    connectedProjectIdForHost,
-    deleteNodes,
-    gatewayModels,
-    gatewayStatus,
-    gatewayError,
-    session.source,
-    liveLinkMenuItems
-  ])
+    },
+    [nodeWritesFor, liveLinkMenuItems, liveNodeActionCtx, gatewayModels, gatewayStatus, gatewayError, connectedProjectIdForHost]
+  )
+
+  /** A kanban card's rows from the node builder (BOARD_NODE_ACTION_IDS), for a node of `projectId`. */
+  const boardNodeActionItems = useCallback(
+    (nodeId: string, projectId: string): MenuItem[] =>
+      buildNodeActionItems([nodeId], undefined, nodeActionCtxFor(projectId), { allow: BOARD_NODE_ACTION_IDS }),
+    [nodeActionCtxFor]
+  )
+  // A card's color (the card modal's Color button), through the card's project's write router.
+  const setCardColor = useCallback(
+    (projectId: string, nodeId: string, color: string) => nodeWritesFor(projectId).setColor([nodeId], color),
+    [nodeWritesFor]
+  )
+  const setActiveCardColor = useCallback(
+    (nodeId: string, color: string) => setCardColor(activeProjectId, nodeId, color),
+    [setCardColor, activeProjectId]
+  )
+  // The per-project board's card-modal icon, through the same router as its card menu's icon row
+  // (a gone node or a save that fails is reported instead of silently doing nothing).
+  const setActiveCardIcon = useCallback(
+    (nodeId: string, icon: NodeIcon | undefined) => nodeWritesFor(activeProjectId).setIcon(nodeId, icon),
+    [nodeWritesFor, activeProjectId]
+  )
+  // Stable identity for the memoized per-project board, which only ever shows the active project.
+  const activeBoardNodeActionItems = useCallback(
+    (nodeId: string): MenuItem[] => boardNodeActionItems(nodeId, activeProjectId),
+    [boardNodeActionItems, activeProjectId]
+  )
 
   /** "New <agent>" creation entries shared by the pane, sidebar and group context menus.
    *  `at` is the flow position to create at; with `groupId` the node is parented into that group.
@@ -13096,7 +12652,9 @@ export function Canvas() {
       // never reaches this process, so the dialog below can only ever show the resolved form
       // (P5). The renderer's job: validate the source live-or-stored, decide the consent branch
       // (planOpenProject — every grant passes a human decision exactly once, spec Q1), raise the
-      // dialog, apply the NON-ACTIVATING registerProject (P6 — no setActive/travel in any
+      // dialog — unless the human already decided for every such call, through the same
+      // "don't ask again" `write`/`close` honour (@shared/control-confirm) — apply the
+      // NON-ACTIVATING registerProject (P6 — no setActive/travel in any
       // branch), and reply exactly once on confirm AND cancel (GC 12). The grant itself is
       // recorded MAIN-side when this reply lands ok && verified (recordOpenProjectGrant) —
       // nothing in this block authorizes anything.
@@ -13121,6 +12679,16 @@ export function Canvas() {
         }
         const opTitle =
           oneLine((opLive?.data.title as string) ?? opStored?.title ?? '') || sourceNodeId
+        // The CALLER's project — the same name and meaning as the dispatch's own `ctlProject`
+        // further down, which this early block runs before. A node on the live canvas belongs to
+        // the active project (React Flow holds only that one); any other caller is found in the
+        // store. It is what this verb's "don't ask again" is keyed on, exactly as for `write` and
+        // `close`: the trust being expressed is "the agents in that repo", and for a create/adopt
+        // there is no target project yet to key on (@shared/control-confirm).
+        const opStore = useProjects.getState()
+        const ctlProject = opLive
+          ? opStore.getProject(opStore.activeProjectId ?? '')
+          : opStore.projects.find((p) => p.nodes.some((n) => n.id === sourceNodeId))
         // A project color is the ACTIVE TAB's TEXT color, so it takes the narrower system subset
         // (see isSystemNodeColor) — and it takes a subset at ALL because this flag reached
         // `registerProject` unvalidated: an agent-supplied string persisted into project.json and
@@ -13135,8 +12703,9 @@ export function Canvas() {
         }
         // Apply one consent decision: register (create/adopt/idempotent hit) without activating,
         // persist, remember the (caller, project) pair for dialog dedupe — authorization stays
-        // main-side — and reply with the id the caller can feed `--project`.
-        const opFinish = (adoptProbed?: Project) => {
+        // main-side — and reply with the id the caller can feed `--project`. Returns the reply's
+        // sentence, so a WAIVED registration can announce exactly what it did.
+        const opFinish = (adoptProbed?: Project): string => {
           const r = useProjects.getState().registerProject({
             resolvedCwd,
             name: args.name,
@@ -13145,7 +12714,9 @@ export function Canvas() {
           })
           recordAttachConsent(sourceNodeId, r.project.id)
           void writeDisk()
-          reply({ ok: true, ...openProjectReply(r.project, r.created, r.adopted) })
+          const done = openProjectReply(r.project, r.created, r.adopted)
+          reply({ ok: true, ...done })
+          return done.message
         }
         // The probe only matters when no project owns this cwd yet (adopt-vs-create copy) — an
         // idempotent hit must not pay a folder read.
@@ -13167,27 +12738,44 @@ export function Canvas() {
           opFinish()
           return
         }
+        // What an answer adopts, decided once so the waived path and the confirmed path register
+        // the SAME thing.
+        const opAdopt =
+          opPlan.confirmKind === 'adopt' && opProbed ? { ...opProbed, closed: false } : undefined
+        // Has the user said "don't ask again" for the agents in the caller's project (or for this
+        // app run, or permanently in Settings)? The SAME shared decision `write`/`close` read. It
+        // skips only the human — main has already gated the caller (verified, local, cwd, grant
+        // cap) and still records the grant from this reply.
+        const opWaiver = controlConfirmDecision(verb, ctlProject?.id)
+        if (opWaiver.via) {
+          // A waived registration still announces itself, naming the waiver that let it through.
+          const opDone = opFinish(opAdopt)
+          setNotice({
+            kind: 'info',
+            text: waivedNotice(`Agent "${opTitle}" ${opDone}`, opWaiver.via, ctlProject?.name)
+          })
+          return
+        }
         // One confirm dialog at a time — the write/close rule, read off the shared set.
         if (isDestructiveVerb(verb) && confirmBusy()) {
           reply({ ok: false, error: 'a confirmation is already pending — try again' })
           return
         }
+        setControlWaiveChoice('ask')
         setConfirm({
           message: opPlan.message,
           confirmLabel: opPlan.confirmLabel,
           requestedBy: opTitle,
-          // NO `waiveVerb`. `open-project` is outside `CONFIRM_WAIVABLE_VERBS` and must stay
-          // outside it: it widens the app's blast radius (a new directory registered as a project,
-          // plus a grant the caller then feeds to `--project`) rather than acting inside it, and it
-          // cannot produce the dialog storm the waiver exists to end — `recordAttachConsent`
-          // already dedupes it per (caller, project). The table refuses it too; this is the belt.
+          // Waivable since the 2026-10 report — see `CONFIRM_WAIVABLE_VERBS` for why the old
+          // "already deduped" reason did not hold (the dedupe is per caller NODE, per app run).
+          waiveVerb: isWaivableVerb(verb) ? verb : undefined,
+          waiveProjectId: ctlProject?.id,
+          waiveProjectName: ctlProject?.name,
           expiresAt: confirmExpiresAt(Date.now()),
           onExpire: () => reply({ ok: false, error: 'expired before the user answered' }),
           onConfirm: () => {
             setConfirm(null)
-            opFinish(
-              opPlan.confirmKind === 'adopt' && opProbed ? { ...opProbed, closed: false } : undefined
-            )
+            opFinish(opAdopt)
           },
           onCancel: () => reply({ ok: false, error: 'denied by user' })
         })
@@ -15746,8 +15334,7 @@ export function Canvas() {
               return
             }
             // Destructive → confirm. Replies on confirm AND cancel.
-            setControlWaive(false)
-            setControlWaiveScope('session')
+            setControlWaiveChoice('ask')
             setConfirm({
               message: `Agent "${srcTitle}" wants to send to ${args.node}:\n\n${args.text ?? ''}`,
               confirmLabel: 'Send',
@@ -15855,8 +15442,7 @@ export function Canvas() {
               return
             }
             // Destructive → confirm. Replies on confirm AND cancel.
-            setControlWaive(false)
-            setControlWaiveScope('session')
+            setControlWaiveChoice('ask')
             setConfirm({
               message: closeMessage,
               requestedBy: srcTitle,
@@ -16237,7 +15823,10 @@ export function Canvas() {
       const agentId = (liveNode?.data.agentId as AgentId | undefined) ?? storedNode?.agentId
       const name = title.trim()
       if (agentId && canRename(agentId) && name) {
-        void pushSessionRename(api.pty, id, name, prevTitle)
+        // The NODE's core, not the active tab's: the sidebar and the Omni board rename nodes of
+        // every project, and a relay- or hosted-bound project's session lives on another core —
+        // the active tab's `api` would type `/rename` into a same-named session on the wrong one.
+        void pushSessionRename(sessionForProject(projectId).api.pty, id, name, prevTitle)
       }
     },
     [activeProjectId, setNodes, markDirty, writeDisk]
@@ -16364,17 +15953,7 @@ export function Canvas() {
     }
     const onGlobalSetIcon = (e: CustomEvent<{ projectId: string; nodeId: string; icon: import('@shared/node-icon').NodeIcon | undefined }>) => {
       const { projectId, nodeId, icon } = e.detail
-      if (projectId === useProjects.getState().activeProjectId) {
-        setNodes((ns) => ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, icon } } : n)))
-        markDirty()
-      } else {
-        useProjects.setState((s) => ({
-          projects: s.projects.map((p) =>
-            p.id === projectId ? { ...p, nodes: p.nodes.map((n) => (n.id === nodeId ? { ...n, icon } as never : n)) } : p
-          )
-        }))
-        void writeDisk()
-      }
+      nodeWritesFor(projectId).setIcon(nodeId, icon)
     }
     window.addEventListener('nodeterm:global-rename' as never, onGlobalRename as never)
     window.addEventListener('nodeterm:global-edit-sticky' as never, onGlobalEditSticky as never)
@@ -16388,12 +15967,19 @@ export function Canvas() {
       window.removeEventListener('nodeterm:global-delete' as never, onGlobalDelete as never)
       window.removeEventListener('nodeterm:global-set-icon' as never, onGlobalSetIcon as never)
     }
-  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban, closeStoredNodes])
+  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban, closeStoredNodes, nodeWritesFor])
 
   // Sidebar "Name with AI": generate a title from the session's captured terminal output
   // (same BYO-agent path as the terminal node's ✦), then apply it via renameSession.
   const aiNameSession = useCallback(
     async (projectId: string, id: string, cwd?: string) => {
+      // Every failure is reported: this funnel serves the sidebar and both boards, and a "Name with
+      // AI" that silently does nothing reads as a dead row.
+      const failed = (reason: string): void => {
+        const why = reason.trim()
+        const message = why ? `Couldn't name this session with AI: ${why}` : "Couldn't name this session with AI"
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      }
       // Track progress in a store keyed by node id so the spinner survives the row/sidebar
       // unmounting mid-request; this Canvas-level call completes and applies the name anyway.
       useSessionNaming.getState().set(id, true)
@@ -16406,13 +15992,37 @@ export function Canvas() {
             .getState()
             .projects.find((p) => p.id === projectId)
             ?.nodes.find((n) => n.id === id)?.accountId
-        const r = await api.pty.generateName(id, cwd ?? '', accountId)
+        // The node's own core (see `renameSession`): the capture must read the session where it
+        // actually runs, not a same-named one on the active tab's core.
+        const r = await sessionForProject(projectId).api.pty.generateName(id, cwd ?? '', accountId)
         if (r.ok) renameSession(projectId, id, r.message)
+        else failed(r.message)
+      } catch (e) {
+        failed(e instanceof Error ? e.message : String(e))
       } finally {
         useSessionNaming.getState().set(id, false)
       }
     },
     [renameSession]
+  )
+
+  // A kanban card's "Name with AI": the sidebar's funnel (`aiNameSession`), with the node's cwd
+  // read from wherever the node lives — the live canvas when it holds the project, else the store.
+  const aiNameFromKanban = useCallback(
+    (projectId: string, nodeId: string) => {
+      const live = liveCanvasHolds(nodesProjectIdRef.current, useProjects.getState().activeProjectId, projectId)
+        ? nodesRef.current.find((n) => n.id === nodeId)
+        : undefined
+      const cwd =
+        (live?.data.cwd as string | undefined) ??
+        useProjects.getState().getProject(projectId)?.nodes.find((n) => n.id === nodeId)?.cwd
+      void aiNameSession(projectId, nodeId, cwd)
+    },
+    [aiNameSession]
+  )
+  const aiNameFromActiveKanban = useCallback(
+    (nodeId: string) => aiNameFromKanban(activeProjectId, nodeId),
+    [aiNameFromKanban, activeProjectId]
   )
 
   // Sidebar "Name with AI" for a canvas group: generate a title from its member terminals'
@@ -16557,19 +16167,14 @@ export function Canvas() {
       // Delete is swapped for End session rather than offered beside it.
       const body: MenuItem[] =
         projectId === activeProjectId
-          ? (() => {
-              const full = selectionItems([id])
-              // Drop the canvas menu's trailing "Delete" (destructive deleteNodes) and any
-              // separator left dangling before it, then append the session row's "End session".
-              // Found by label rather than fixed index so this stays correct if the canvas
-              // menu's tail changes — Delete is the only 'Delete'-labelled row.
-              const withoutDelete = full.filter((it) => !('label' in it && it.label === 'Delete'))
-              return [
-                ...tidySeparators(withoutDelete),
-                { type: 'separator' },
-                { label: 'End session', icon: <IconTrash />, danger: true, onClick: () => closeSession(projectId, id) }
-              ]
-            })()
+          ? [
+              // The canvas menu minus its trailing "Delete" (destructive deleteNodes) — the
+              // builder drops the section and any rule it leaves dangling — then the session
+              // row's "End session" in its place.
+              ...selectionItems([id], undefined, { omit: ['delete'] }),
+              { type: 'separator' },
+              { label: 'End session', icon: <IconTrash />, danger: true, onClick: () => closeSession(projectId, id) }
+            ]
           : [
               // Non-active project: the shared rows read the active canvas's live nodes + per-node
               // registered closures, which don't exist here. Keep the narrow set that works for any
@@ -18941,7 +18546,9 @@ export function Canvas() {
         <GlobalKanbanView
           live={globalKanbanLive}
           onModalNodeChange={setKanbanModalNode}
-          liveLinkMenuItems={liveLinkMenuItems}
+          nodeActionItems={boardNodeActionItems}
+          onAiName={aiNameFromKanban}
+          onSetColor={setCardColor}
         />
       ) : perProjectKanbanOpen && (
         <KanbanView
@@ -18955,9 +18562,10 @@ export function Canvas() {
           onDeleteNode={deleteNodeFromKanban}
           onModalNodeChange={setKanbanModalNode}
           onBrowserNav={browserNavFromKanban}
-          onSetIcon={setNodeIcon}
-          accountMenuItems={accountSwitchRows}
-          liveLinkMenuItems={liveLinkMenuItems}
+          onSetIcon={setActiveCardIcon}
+          nodeActionItems={activeBoardNodeActionItems}
+          onAiName={aiNameFromActiveKanban}
+          onSetColor={setActiveCardColor}
           onAutoMoveFromPulls={autoMoveCardFromPulls}
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
@@ -19554,46 +19162,38 @@ export function Canvas() {
           // The user did not open this one — an agent did. It appeared under their hands, so it is
           // answered by a click, never by a keystroke aimed somewhere else (components/confirm-key).
           enterConfirms={!confirm.requestedBy}
-          // "Don't ask again" — offered ONLY for a verb the shared table admits, and offered with
-          // a SCOPE, because the app-run-only waiver this used to grant is not what a user who
-          // ticks that box means: it lasts until they quit, and the only durable answer lived in
-          // Settings as a MACHINE-WIDE switch, so the realistic choices were "be asked forever" or
-          // "turn it off everywhere". The narrower durable grant is per project, which is the most
-          // a dialog that appeared under the user's hands may hand out — the machine-wide `always`
-          // stays Settings-only for exactly the reason it always did. Default stays `session`, so
-          // a user who ticks and clicks through gets the old, bounded behaviour.
-          // Built here rather than stored on `ConfirmState` because the checkbox is live state and
+          // "Don't ask again" — offered ONLY for a verb the shared table admits, as three radios
+          // that are visible from the start (@shared/control-confirm `waiveChoices`): ask next time
+          // (selected, and not a waiver), never again for the agents in the CALLER's project
+          // (durable and machine-local, through `waiveControlConfirmForProject`), or never again in
+          // any project until nodeterm quits. It used to be a checkbox whose reaches appeared only
+          // once ticked, defaulting to the app-run one — so the per-project answer read as
+          // missing. The machine-wide `always` stays Settings-only: a dialog that appeared under
+          // the user's hands must not switch a gate off everywhere, permanently, on one stray click.
+          // Built here rather than stored on `ConfirmState` because the choice is live state and
           // that object is a snapshot.
-          option={
+          choice={
             confirm.waiveVerb
               ? {
                   label: "Don't ask again",
-                  checked: controlWaive,
-                  onChange: setControlWaive,
-                  scopes: [
-                    { value: 'session', label: 'While nodeterm is running' },
-                    {
-                      value: 'project',
-                      // The project NAME, not "this project": the call may well be acting on a
-                      // canvas the user is not looking at, so "this" would point at the wrong one.
-                      label: confirm.waiveProjectName
-                        ? `Always in "${confirm.waiveProjectName}"`
-                        : 'Always in this project'
-                    }
-                  ],
-                  scope: controlWaiveScope,
-                  onScopeChange: (v) => setControlWaiveScope(v === 'project' ? 'project' : 'session')
+                  options: waiveChoices({
+                    id: confirm.waiveProjectId,
+                    name: confirm.waiveProjectName
+                  }),
+                  value: controlWaiveChoice,
+                  onChange: (v) =>
+                    setControlWaiveChoice(v === 'project' || v === 'session' ? v : 'ask')
                 }
               : undefined
           }
           onConfirm={() => {
-            // Granted on CONFIRM only. A denial must never widen anything, whatever is ticked.
-            if (confirm.waiveVerb && controlWaive) {
+            // Granted on CONFIRM only. A denial must never widen anything, whatever is selected.
+            if (confirm.waiveVerb && controlWaiveChoice !== 'ask') {
               // The per-project grant can FAIL (no project owns this call), and it must not fail
-              // silently into nothing: fall back to the app-run waiver the user would have got
-              // before, so a tick always buys what the box promised.
+              // silently into nothing: fall back to the app-run waiver, so a choice always buys at
+              // least the bounded thing it asked for.
               const scoped =
-                controlWaiveScope === 'project' &&
+                controlWaiveChoice === 'project' &&
                 waiveControlConfirmForProject(confirm.waiveVerb, confirm.waiveProjectId)
               if (!scoped) useControlConfirm.getState().waiveForSession(confirm.waiveVerb)
             }

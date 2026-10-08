@@ -38,6 +38,7 @@ let releaseOthers: Mock<() => Promise<LicenseDetail>>
 let deactivate: Mock<() => Promise<LicenseStatus>>
 let activate: Mock<(key: string) => Promise<LicenseStatus>>
 let writeText: Mock<(text: string) => void>
+let openExternal: Mock<(url: string) => void>
 const onNavigate = vi.fn()
 
 /**
@@ -59,6 +60,7 @@ async function mount(
   deactivate = vi.fn(async () => FREE)
   activate = vi.fn(async () => FREE)
   writeText = vi.fn()
+  openExternal = vi.fn()
   ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = {
     license: {
       getStatus: vi.fn(async () => status),
@@ -71,7 +73,8 @@ async function mount(
       activate,
       upgrade: vi.fn(async () => status)
     },
-    clipboard: { writeText }
+    clipboard: { writeText },
+    shell: { openExternal }
   }
   const { useEntitlement } = await import('../../../state/entitlement')
   const { LicenseSection } = await import('./LicenseSection')
@@ -360,5 +363,33 @@ describe('LicenseSection — existing App Store purchase (#787)', () => {
     expect(
       [...host.querySelectorAll('button')].some((b) => b.textContent === 'Open Settings → Phone')
     ).toBe(false)
+  })
+})
+
+describe('LicenseSection — billing & invoices', () => {
+  const PORTAL = 'https://billing.stripe.com/p/login/9B65kFeraflH9ora4A7EQ00'
+
+  it('opens the Stripe billing page for a desktop (keygen) license', async () => {
+    await mount(PRO)
+    await act(async () => click('Billing & invoices'))
+    expect(openExternal).toHaveBeenCalledWith(PORTAL)
+    expect(screenText()).toMatch(/email you used at checkout/)
+  })
+
+  it('offers it when the license read failed — a lapsed card reads back as inactive', async () => {
+    await mount(PRO, { key: null, used: 0, seats: 0, source: null, error: 'inactive' })
+    await act(async () => click('Billing & invoices'))
+    expect(openExternal).toHaveBeenCalledWith(PORTAL)
+  })
+
+  it('does not send an App Store subscriber to Stripe', async () => {
+    await mount(PRO, { key: null, used: 0, seats: 0, source: 'apple', error: null })
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Billing & invoices')).toBe(false)
+  })
+
+  it('is reachable without Pro — past invoices and a card that needs updating', async () => {
+    await mount(FREE)
+    await act(async () => click('Billing & invoices'))
+    expect(openExternal).toHaveBeenCalledWith(PORTAL)
   })
 })
