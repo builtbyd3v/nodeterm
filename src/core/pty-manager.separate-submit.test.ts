@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
 import { submitsSeparately, typesChatInput } from '../shared/agents/config'
@@ -56,6 +56,13 @@ describe('PtyManager.sendText separate submit', () => {
   })
 })
 
+// Loading pty-manager cold takes 1-3.5 s here (more under a parallel run). Done inside a test it ate
+// that test's 5 s budget and timed the first rig out; load it once, under its own budget.
+let PtyManager: typeof import('./pty-manager').PtyManager
+beforeAll(async () => {
+  ;({ PtyManager } = await import('./pty-manager'))
+}, 60_000)
+
 /** The two tmux calls a separate-submit send makes, recorded in order on a real PtyManager. */
 interface Internals {
   agentByKey: Map<string, string>
@@ -83,7 +90,6 @@ describe('PtyManager.sendText: overlapping separate-submit sends do not interlea
   })
 
   async function rig(agent: string, paste: (text: string) => true | false = () => true) {
-    const { PtyManager } = await import('./pty-manager')
     const mgr = new PtyManager() as unknown as Internals
     mgr.agentByKey.set('n1', agent)
     mgr.liveSessionForPersistKey = () => ({})
@@ -144,7 +150,6 @@ describe('PtyManager.sendChatPrompt: the typed chat path leaves cursor on the sp
   })
 
   async function rig(agent: string) {
-    const { PtyManager } = await import('./pty-manager')
     const mgr = new PtyManager() as unknown as Internals
     mgr.agentByKey.set('n1', agent)
     mgr.liveSessionForPersistKey = () => ({})
@@ -228,7 +233,6 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
   })
 
   async function rig(opts: { create?: string; placed?: (string | undefined)[]; screen?: () => Promise<string> }) {
-    const { PtyManager } = await import('./pty-manager')
     const mgr = new PtyManager() as unknown as Internals
     if (opts.create) mgr.agentByKey.set('n1', opts.create)
     if (opts.placed) mgr.setRelayNodeResolver(resolver(...opts.placed))

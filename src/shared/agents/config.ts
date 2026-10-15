@@ -498,6 +498,12 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // MEASURED on 2026.10.01 its interactive session listed `~/.claude/skills/manage-nodeterm-canvas`
 // right after its own built-ins, ahead of the tail it truncates when the skill list is long.
 export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'cursor'] as const
+// Agents whose TOOL shell on Windows is POSIX: Claude Code runs its Bash tool (and its hooks)
+// through Git Bash, so `sh "<shim>.sh"` works there exactly as on macOS/Linux. Every other agent
+// runs tools in PowerShell (codex, gemini, copilot — measured in their sources) or cmd.exe, where
+// `sh` is not on PATH on a stock Git install; they are told to run the `.cmd` launcher instead
+// (`shimDialectFor` in ./shim-invocation.ts). Membership only matters on a win32 host.
+export const POSIX_TOOL_SHELL_ON_WINDOWS = ['claude'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
@@ -673,6 +679,7 @@ export const submitsSeparately = (id: AgentId): boolean => includes(SEPARATE_SUB
 export const readsLinkedContextSkill = (id: AgentId): boolean => includes(LINKED_CONTEXT_SKILL_AGENTS, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
+export const usesPosixToolShellOnWindows = (id: AgentId): boolean => includes(POSIX_TOOL_SHELL_ON_WINDOWS, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
 /** Can the model GATEWAY's catalogue (its discovered ids, its default model) apply to this agent?
