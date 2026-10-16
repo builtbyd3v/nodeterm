@@ -50,6 +50,7 @@ import { installLogSink } from '../core/log-sink'
 import { registerLogHandlers } from '../core/log-handlers'
 import os from 'os'
 import { hookServer } from '../core/agents/hook-server'
+import { wireClaudePaneOrigin } from '../core/agents/claude-pane-origin'
 import { serverEditionControlHandler } from './control-unsupported'
 import { initServerCanvasControl, serverCanvasShimPath, type ServerCanvasControl } from './canvas-control'
 import { registerStationNoticeIpc } from '../core/agents/station-notice'
@@ -414,6 +415,10 @@ export async function startServer(
   // on the desktop it would also reach relay peers. A headless server with nobody attached simply
   // gets no answer, the prompt expires, and the shared value stays unused: fail closed on the
   // grant, fail open on the spawn.
+  // A node owned by an SSH project is never spawned on THIS machine (issue #1186). This shell has
+  // no SSH-project manager, so such a node cannot run anywhere here — refusing is the honest answer,
+  // the same one the desktop gives while that project's ControlMaster is down.
+  ptyManager.setSshProjectCheck((projectId) => workspaceStore.sshProjectIds().includes(projectId))
   ptyManager.setProjectSpawnOverrides(
     makeProjectSpawnOverrides({
       readSettings: (projectId) => workspaceStore.readProjectSettings(projectId),
@@ -560,6 +565,17 @@ export async function startServer(
   })
   // Cursor NEEDS YOU, same seam as the desktop (core/agents/cursor-approval.ts).
   hookServer.setPaneReader((nodeId) => ptyManager.captureSession(nodeId))
+  // Which claude may speak for a node (#1112, #1153): the pane tty from THIS shell's PtyManager.
+  // Same call as the desktop's (hook-verified-parity.test.ts).
+  wireClaudePaneOrigin({
+    hooks: hookServer,
+    paneOwner: (nodeId) => ptyManager.paneOwner(nodeId),
+    // No SSH-project manager here: such a node's pane is on another machine, never readable.
+    cannotRead: (nodeId) => !!workspaceStore.sshProjectIdForNode(nodeId),
+    on: (channel, cb) => platform.on(channel, cb),
+    destroyChannel: IPC.ptyDestroy,
+    recycleChannel: IPC.ptyRecycle
+  })
   // The ⌘M chat view + the find-bar's transcript index. Registered HERE rather than with the rest
   // of the handlers because the hook-fed path authority is the tail created just above. No remote
   // leg: the Server Edition runs ON the host whose transcripts it reads, so local resolution is

@@ -321,6 +321,14 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   must pass `isBoundedAnswerContent` or it is silently ignored. Answer content never goes on an argv.
   See `docs/hook-reply-approvals.md`.
 
+- **`NODETERM_NODE_ID` is inherited, so a hook event's node id is not proof it is that node's
+  session.** A detached `claude -p` started from a node, or Claude's own daemon hosting a fork,
+  posts hooks under the node's id (and its token). Claude events pass `core/agents/claude-pane-origin.ts`
+  in the hook server before ANY listener: the managed script reports `$CLAUDE_PID`'s foreground
+  flag and tty, and only the pane's foreground claude speaks for the node. Do not add a listener
+  that runs before that gate, and do not "fix" a stuck node by loosening it: missing facts already
+  fail open. Both shells call `wireClaudePaneOrigin` (pinned by `hook-verified-parity.test.ts`).
+
 - **Never call the user's machine a Mac in user-visible copy.** Use `thisMachine()` /
   `thisMachineCap()` / `machineNoun()` from `src/renderer/lib/machineName.ts` — "this Mac" on
   macOS, "this PC" on Windows, "this computer" elsewhere and in any Server Edition browser tab
@@ -612,6 +620,15 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   a session for a phone-named node id directly (`attachDetached` / `createDetached`): that is how an
   SSH node became a local shell in this machine's `$HOME`. CLAUDE.md, "A remote node is NEVER
   spawned locally".
+
+- **An SSH project's node runs on the project's host — ask the project, not the node.** Node
+  fields like `sshRemoteTmux` arrive through a shared `project.json` that the host's own desktop and
+  teammates also write, so a node without them must still never become a local shell (issue #1186).
+  `fileToProject` derives the routing from the project's SSH record, the file written back to the
+  host stays neutral, and core refuses a local spawn owned by an SSH project
+  (`PtyManager.setSshProjectCheck`). A new path that turns stored nodes into live ones or spawns a
+  terminal goes through those, not through the node's fields alone. CLAUDE.md, "A remote node is
+  NEVER spawned locally".
 
 - **Phone keys and store links are platform-neutral.** New paired keys are stamped
   `nodeterm-mobile-<id>`, but revoke must keep matching the legacy `nodeterm-ios-<id>` stamp every
@@ -983,6 +1000,13 @@ shell is forked by the account-scoped app-server, so it has `CODEX_THREAD_ID` bu
 record path into a remote host is both wrong and a local-layout leak. A guard test enforces that
 (`remote-shim-neutrality.guard.test.ts`), because the leak is silent — the remote shim keeps
 working, and nothing goes red.
+
+**A Codex hook is identified by its payload, not its env.** Hooks the shared app-server runs are
+the daemon's children: they carry the daemon's env (often a stale pane's `NODETERM_NODE_ID`) and no
+`CODEX_THREAD_ID`. The codex hook script reads the payload's leading `session_id` before the prelude
+and lets that thread's record outrank an inherited id; only a pane marked `NODETERM_CODEX_PLAIN=1`
+(the launcher's in-process exits) keeps its own. Do not move the codex payload read back below the
+prelude (`codex-shared-daemon-hook.test.ts` runs the real script against the real hook server).
 
 **That prelude may not decide anything a pane already decided.** It exports the agent id and the
 canvas-control grant the ownership RECORD carries, never constants. They used to be hardcoded

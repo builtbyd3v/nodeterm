@@ -856,6 +856,25 @@ Lifecycle, by intent:
   The refusal is **only** in `spawnNew` — a co-attach JOIN to a live session for that node id is
   still correct. An offline node reports itself to `SshReconnector`, so the canvas heals itself;
   `retryNow` (banner Reconnect / node Reconnect) skips the backoff and clears the refuse window.
+  **Whether a node is remote comes from its PROJECT, never from its own fields** (issue #1186,
+  `@shared/ssh-project-nodes`). `requireRemote`/`sshRemoteTmux` used to be stamped only by this
+  machine's node factories, but an SSH project's `project.json` lives on the host and other writers
+  put nodes into it — above all the host's own desktop, which opens the same folder as a LOCAL
+  project (`cwd: "."`, no `ssh` fields). Such a node ran on the VIEWING machine in an unrelated
+  folder, under the id the host was running. Three layers: (1) `fileToProject` routes every session
+  node of an SSH project to the project's host (`routeSshProjectNodes`: `ssh` = the project server,
+  `sshRemoteTmux`, cwd resolved POSIX-style against `remoteCwd`; editor/video/files get `sshFs`),
+  and `persistedCanvases` / `getNodeResolved` read the cache the same way; (2) `projectToFile`
+  writes the SSH mirror NEUTRAL (`neutralSshProjectNodes` drops those fields, cwd back to `./x`),
+  because the file is shared LAYOUT — a node stamped "runs over ssh on <host>" cannot run on the
+  host's own desktop at all; (3) core refuses a local spawn whose `ownerProjectId` is an SSH project
+  (`PtyManager.setSshProjectCheck`, wired in BOTH shells from the index) even without
+  `requireRemote`. Kept as written: a plain `ssh <host>` terminal (`ssh` without `sshRemoteTmux` —
+  `shell: 'ssh'` at the spawn) and a foreign host ATTACHMENT (`sshRemoteTmux` + another host). The one
+  local terminal an SSH canvas may hold is a LOCAL-account login node, marked in memory only
+  (`renderer/lib/localOnSshCanvas.ts` → `localOnSshCanvas` on the create; a scoped relay guest's is
+  deleted); after a restart it routes to the host like any other node. **Downgrade:** a build older
+  than this one reads the neutral file's nodes as local (the bug it already had for host-made nodes).
   **The phone's relay `pty.attach` is the other way in, and it is closed the same way**
   (`PtyManager.prepareRelayAttach`, pure routing in `core/relay-attach-plan.ts`). It used to call
   `attachDetached(nodeId)` → `tmux new-session -A` on the LOCAL socket for whatever id the phone
@@ -962,8 +981,10 @@ Lifecycle, by intent:
     plain terminal, or by an agent through `open-terminal --cmd codex` / `write` — carries that
     node's `NODETERM_NODE_ID` and, on 0.157+, can still start the account's daemon with it; managed
     threads' tool shells then keep the leaked id (the prelude skips a set one). Changing the prelude
-    to prefer the thread record over a set id was rejected: a bind-refused fallback pane legitimately
-    runs a thread another node's record names. (2) A launch-command override or custom `launchCmd`
+    to prefer the thread record over a set id was rejected FOR TOOL SHELLS: a bind-refused fallback
+    pane legitimately runs a thread another node's record names. HOOKS are different (#1175, below):
+    their payload names the event's own thread, so the codex hook script lets that thread's record
+    outrank an inherited id unless the pane is marked `NODETERM_CODEX_PLAIN=1`. (2) A launch-command override or custom `launchCmd`
     that runs a DIFFERENT codex than PATH's (`npx @openai/codex@0.148.0`) is given the flag from
     PATH's probe and dies on it; the fix there is the user's (drop the pin or add the flag to their
     own command) — we cannot probe an arbitrary command line. (3) The Windows argv planner
@@ -3385,6 +3406,36 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `questions` (a held AskUserQuestion's exact question texts, from the one `readQuestions`) is what
   the ⌘M answer controls match their card by — absent = unreadable input = no controls. Desktop local + SSH, Server Edition local;
   relay unchanged; phone keeps `allow`/`deny` (its plan approve now works via the script mapping).
+- **A hook event's node id is INHERITED, so only the pane's foreground claude speaks for a node**
+  (issues #1112, #1153; `core/agents/claude-pane-origin.ts`). `NODETERM_NODE_ID` (and the per-node
+  token, looked up by that id) reaches every process the node's claude starts: a background script's
+  `claude -p` took over the node's session id, model, meter and context-link transcript (#1112), and
+  Claude's daemon (`claude daemon run` → `--bg-pty-host` → the `--fork-session` claude) posted a
+  fork's hooks as the node that spawned it, so `/rename` retitled the wrong node (#1153). The rule is
+  keyed on the PROCESS, not the session: the managed claude script runs one
+  `ps -o stat= -o tty= -p $CLAUDE_PID` WHILE claude waits on the hook and posts
+  `nodeterm_claude_{pid,fg,tty}`; the hook server sends every claude event through a per-node
+  ordered gate BEFORE either listener, and drops it when the claude is not in the foreground group
+  of any terminal, or is foreground on a tty that is not the node's pane tty (`PtyManager.paneOwner`,
+  wired in BOTH shells by `wireClaudePaneOrigin`, cached 5 min, re-read on disagreement at most every
+  10 s, forgotten on destroy/recycle). MEASURED on Claude Code 2.1.301 in a private tmux server:
+  `CLAUDE_PID` is in every hook's env (and in the binary from at least 2.1.220, absent from 2.1.200);
+  the pane's interactive claude has `+` on the pane tty; a `claude -p` run from claude's Bash tool
+  (a setsid'd shell) has tty `?`; a `&` job of the pane shell has no `+`. Every legitimate change —
+  `/clear`, `/resume`, `/compact`, Branch, cold-restore resume, in-place restart, a new `claude`
+  after the old one quit — happens in the pane's foreground and needs no rule of its own; a claude
+  that died without `SessionEnd` blocks nothing (there is no binding to release). Rejected:
+  session-source allowlists (a detached `claude -p --resume` also says `resume`; a missing
+  `SessionEnd` locks the next session out — both found in the #1112 prototype) and "first session
+  wins until its pid dies" (needs a remote liveness probe, and a daemon fork outliving its spawner
+  would take the node over). **Fails OPEN** wherever a fact is missing — no `CLAUDE_PID` (older
+  claude), Git Bash / BusyBox `ps`, a pane tty this core cannot read (Zellij, plain-shell fallback,
+  an SSH node with no live client here), a probe over 2 s — because dropping the pane's OWN events
+  strands a node on RUNNING. The script also never arms the approval wait for a non-foreground
+  claude. Known residuals: a claude wrapped in its own pty inside the pane (`script`, `unbuffer`) is
+  foreground on that pty and reads as foreign; a node whose TUI attaches to a daemon-hosted session
+  gets no hook events at all (they were never posted under its id). Mobile: N/A (the mirror simply
+  stops receiving foreign events).
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
   "a session on this machine", never *which* session, so every node also gets a capability derived
@@ -3418,6 +3469,23 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     layout by construction on all three surfaces) and then the well-known data dirs; it is monotone
     — advertised dir first, keyed by node-id filename in every candidate, and a foreign instance's
     dir yields a foreign `kid` = `legacy` = exactly what presenting nothing already gave.
+  - **A Codex HOOK under the shared app-server is identified by its PAYLOAD, not its env** (#1150,
+    #1175). MEASURED on codex-cli 0.162.0 (private CODEX_HOME + tmux socket, a hook dumping env and
+    stdin): a hook process is the DAEMON's child, carries the daemon's env and NEVER
+    `CODEX_THREAD_ID` (only tool shells get that), and its stdin starts `{"session_id":"<thread>"`.
+    So a scrubbed daemon ran every managed node's hooks with no node id (silent exit, #1150), and a
+    daemon a plain `codex` pane started ran them under THAT pane's long-gone `NODETERM_NODE_ID`
+    (#1175). The codex managed script (local only — remote scripts carry no prelude) now reads stdin
+    FIRST, takes the LEADING `session_id` with builtins (anchored, so a nested one in tool input
+    never matches), and hands it to the prelude (`hookPayloadThread`), where a record for that thread
+    wins over an INHERITED node id and the stale endpoint vars are unset before the record's
+    endpoint file is sourced. The one exception is a pane our launcher ran in-process
+    (`nt_exec_plain` exports `NODETERM_CODEX_PLAIN=1`; never on a `--remote` exit): its env is its
+    own and stands. Tool shells and both shims keep the old rule (a set id is never touched). The
+    event is still verified against the bound node's 0600 token, so a forged payload buys nothing a
+    same-user process could not already do. Residuals: a node launched with a bare `codex` (shared
+    identity off) whose thread has ANOTHER node's record reports as that node; and a codex typed
+    inside a marked plain pane's tool shell starts a daemon that carries the marker.
   - **Every LOCAL generated sh client recovers shared-Codex identity before its env gate.** A tool
     shell forked by the account-scoped app-server carries `CODEX_THREAD_ID`, not the pane's
     `NODETERM_*`. Managed hooks, local `nodeterm.sh`, and local `context.sh` therefore prepend
